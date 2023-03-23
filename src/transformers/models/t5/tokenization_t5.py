@@ -41,6 +41,8 @@ PRETRAINED_VOCAB_FILES_MAP = {
     }
 }
 
+
+# TODO(PVP) - this should be removed in Transformers v5
 PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES = {
     "t5-small": 512,
     "t5-base": 512,
@@ -77,12 +79,11 @@ class T5Tokenizer(PreTrainedTokenizer):
         pad_token (`str`, *optional*, defaults to `"<pad>"`):
             The token used for padding, for example when batching sequences of different lengths.
         extra_ids (`int`, *optional*, defaults to 100):
-            Add a number of extra ids added to the end of the vocabulary for use as sentinels. These tokens are
-            accessible as "<extra_id_{%d}>" where "{%d}" is a number between 0 and extra_ids-1. Extra tokens are
-            indexed from the end of the vocabulary up to beginning ("<extra_id_0>" is the last token in the vocabulary
-            like in T5 preprocessing see
-            [here](https://github.com/google-research/text-to-text-transfer-transformer/blob/9fd7b14a769417be33bc6c850f9598764913c833/t5/data/preprocessors.py#L2117)).
-        additional_special_tokens (`List[str]`, *optional*):
+           Add a number of extra ids added to the vocabulary for use as sentinels. These tokens are
+            accessible as "<extra_id_{%d}>" where "{%d}" is a number between 0 and extra_ids-1. These tokens can be
+            retrieved by calling get_sentinel_tokens method and token ids can be by calling get_sentinel_token_ids
+            method
+         additional_special_tokens (`List[str]`, *optional*):
             Additional special tokens used by the tokenizer.
         sp_model_kwargs (`dict`, *optional*):
             Will be passed to the `SentencePieceProcessor.__init__()` method. The [Python wrapper for
@@ -119,7 +120,7 @@ class T5Tokenizer(PreTrainedTokenizer):
         extra_ids=100,
         additional_special_tokens=None,
         sp_model_kwargs: Optional[Dict[str, Any]] = None,
-        **kwargs
+        **kwargs,
     ) -> None:
         # Add extra_ids to the special token list
         if extra_ids > 0 and additional_special_tokens is None:
@@ -129,8 +130,9 @@ class T5Tokenizer(PreTrainedTokenizer):
             extra_tokens = len(set(filter(lambda x: bool("extra_id" in str(x)), additional_special_tokens)))
             if extra_tokens != extra_ids:
                 raise ValueError(
-                    f"Both extra_ids ({extra_ids}) and additional_special_tokens ({additional_special_tokens}) are provided to T5Tokenizer. "
-                    "In this case the additional_special_tokens must include the extra_ids tokens"
+                    f"Both extra_ids ({extra_ids}) and additional_special_tokens ({additional_special_tokens}) are"
+                    " provided to T5Tokenizer. In this case the additional_special_tokens must include the extra_ids"
+                    " tokens"
                 )
 
         self.sp_model_kwargs = {} if sp_model_kwargs is None else sp_model_kwargs
@@ -150,6 +152,28 @@ class T5Tokenizer(PreTrainedTokenizer):
 
         self.sp_model = spm.SentencePieceProcessor(**self.sp_model_kwargs)
         self.sp_model.Load(vocab_file)
+
+    @staticmethod
+    def _eventually_correct_t5_max_length(pretrained_model_name_or_path, max_model_length, init_max_model_length):
+        if pretrained_model_name_or_path in T5Tokenizer.max_model_input_sizes:
+            deprecated_max_model_length = T5Tokenizer.max_model_input_sizes[pretrained_model_name_or_path]
+            if init_max_model_length is not None and init_max_model_length != max_model_length:
+                return init_max_model_length
+            elif init_max_model_length is None:
+                warnings.warn(
+                    "This tokenizer was incorrectly instantiated with a model max length of"
+                    f" {deprecated_max_model_length} which will be corrected in Transformers v5.\nFor now, this"
+                    " behavior is kept to avoid breaking backwards compatibility when padding/encoding with"
+                    " `truncation is True`.\n- Be aware that you SHOULD NOT rely on"
+                    f" {pretrained_model_name_or_path} automatically truncating your input to"
+                    f" {deprecated_max_model_length} when padding/encoding.\n- If you want to encode/pad to sequences"
+                    f" longer than {deprecated_max_model_length} you can either instantiate this tokenizer with"
+                    " `model_max_length` or pass `max_length` when encoding/padding.\n- To avoid this warning, please"
+                    " instantiate this tokenizer with `model_max_length` set to your preferred value.",
+                    FutureWarning,
+                )
+
+        return max_model_length
 
     @property
     def vocab_size(self):
@@ -188,11 +212,20 @@ class T5Tokenizer(PreTrainedTokenizer):
             return ([0] * len(token_ids_0)) + [1]
         return ([0] * len(token_ids_0)) + [1] + ([0] * len(token_ids_1)) + [1]
 
+    def get_sentinel_tokens(self):
+        return list(
+            set(filter(lambda x: bool(re.search(r"<extra_id_\d+>", x)) is not None, self.additional_special_tokens))
+        )
+
+    def get_sentinel_token_ids(self):
+        return [self._convert_token_to_id(token) for token in self.get_sentinel_tokens()]
+
     def _add_eos_if_not_present(self, token_ids: List[int]) -> List[int]:
         """Do not add eos again if user already added it."""
         if len(token_ids) > 0 and token_ids[-1] == self.eos_token_id:
             warnings.warn(
-                f"This sequence already has {self.eos_token}. In future versions this behavior may lead to duplicated eos tokens being added."
+                f"This sequence already has {self.eos_token}. In future versions this behavior may lead to duplicated"
+                " eos tokens being added."
             )
             return token_ids
         else:
@@ -285,14 +318,19 @@ class T5Tokenizer(PreTrainedTokenizer):
         """Converts a sequence of tokens (string) in a single string."""
         current_sub_tokens = []
         out_string = ""
+        prev_is_special = False
         for token in tokens:
             # make sure that special tokens are not decoded using sentencepiece model
             if token in self.all_special_tokens:
-                out_string += self.sp_model.decode_pieces(current_sub_tokens) + token + " "
+                if not prev_is_special:
+                    out_string += " "
+                out_string += self.sp_model.decode(current_sub_tokens) + token
+                prev_is_special = True
                 current_sub_tokens = []
             else:
                 current_sub_tokens.append(token)
-        out_string += self.sp_model.decode_pieces(current_sub_tokens)
+                prev_is_special = False
+        out_string += self.sp_model.decode(current_sub_tokens)
         return out_string.strip()
 
     def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str]:

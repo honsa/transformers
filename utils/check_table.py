@@ -15,15 +15,16 @@
 
 import argparse
 import collections
-import importlib.util
 import os
 import re
+
+from transformers.utils import direct_transformers_import
 
 
 # All paths are set with the intent you should run this script from the root of the repo with the command
 # python utils/check_table.py
 TRANSFORMERS_PATH = "src/transformers"
-PATH_TO_DOCS = "docs/source"
+PATH_TO_DOCS = "docs/source/en"
 REPO_PATH = "."
 
 
@@ -53,7 +54,7 @@ def _find_text_in_file(filename, start_prompt, end_prompt):
     return "".join(lines[start_index:end_index]), start_index, end_index, lines
 
 
-# Add here suffixes that are used to identify models, seperated by |
+# Add here suffixes that are used to identify models, separated by |
 ALLOWED_MODEL_SUFFIXES = "Model|Encoder|Decoder|ForConditionalGeneration"
 # Regexes that match TF/Flax/PT model names.
 _re_tf_models = re.compile(r"TF(.*)(?:Model|Encoder|Decoder|ForConditionalGeneration)")
@@ -63,12 +64,7 @@ _re_pt_models = re.compile(r"(.*)(?:Model|Encoder|Decoder|ForConditionalGenerati
 
 
 # This is to make sure the transformers module imported is the one in the repo.
-spec = importlib.util.spec_from_file_location(
-    "transformers",
-    os.path.join(TRANSFORMERS_PATH, "__init__.py"),
-    submodule_search_locations=[TRANSFORMERS_PATH],
-)
-transformers_module = spec.loader.load_module()
+transformers_module = direct_transformers_import(TRANSFORMERS_PATH)
 
 
 # Thanks to https://stackoverflow.com/questions/29916065/how-to-do-camelcase-split-in-python

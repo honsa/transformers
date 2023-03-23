@@ -18,14 +18,13 @@
 import itertools
 import json
 import os
+from collections.abc import Mapping
 from shutil import copyfile
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
-
 import sentencepiece as spm
 
-from ...file_utils import add_end_docstrings, is_tf_available, is_torch_available
 from ...tokenization_utils import PreTrainedTokenizer
 from ...tokenization_utils_base import (
     ENCODE_KWARGS_DOCSTRING,
@@ -37,11 +36,9 @@ from ...tokenization_utils_base import (
     TextInput,
     TextInputPair,
     TruncationStrategy,
-    _is_tensorflow,
-    _is_torch,
     to_py_obj,
 )
-from ...utils import logging
+from ...utils import add_end_docstrings, is_tf_tensor, is_torch_tensor, logging
 
 
 logger = logging.get_logger(__name__)
@@ -342,7 +339,8 @@ class MLukeTokenizer(PreTrainedTokenizer):
             self.max_entity_length = 2
         else:
             raise ValueError(
-                f"Task {task} not supported. Select task from ['entity_classification', 'entity_pair_classification', 'entity_span_classification'] only."
+                f"Task {task} not supported. Select task from ['entity_classification', 'entity_pair_classification',"
+                " 'entity_span_classification'] only."
             )
 
         self.max_mention_length = max_mention_length
@@ -375,7 +373,7 @@ class MLukeTokenizer(PreTrainedTokenizer):
         entities_pair: Optional[Union[EntityInput, List[EntityInput]]] = None,
         add_special_tokens: bool = True,
         padding: Union[bool, str, PaddingStrategy] = False,
-        truncation: Union[bool, str, TruncationStrategy] = False,
+        truncation: Union[bool, str, TruncationStrategy] = None,
         max_length: Optional[int] = None,
         max_entity_length: Optional[int] = None,
         stride: int = 0,
@@ -389,7 +387,7 @@ class MLukeTokenizer(PreTrainedTokenizer):
         return_offsets_mapping: bool = False,
         return_length: bool = False,
         verbose: bool = True,
-        **kwargs
+        **kwargs,
     ) -> BatchEncoding:
         """
         Main method to tokenize and prepare for the model one or several sequence(s) or one or several pair(s) of
@@ -535,9 +533,8 @@ class MLukeTokenizer(PreTrainedTokenizer):
         return_offsets_mapping: bool = False,
         return_length: bool = False,
         verbose: bool = True,
-        **kwargs
+        **kwargs,
     ) -> BatchEncoding:
-
         if return_offsets_mapping:
             raise NotImplementedError(
                 "return_offset_mapping is not available when using Python tokenizers. "
@@ -618,7 +615,7 @@ class MLukeTokenizer(PreTrainedTokenizer):
         return_offsets_mapping: bool = False,
         return_length: bool = False,
         verbose: bool = True,
-        **kwargs
+        **kwargs,
     ) -> BatchEncoding:
         if return_offsets_mapping:
             raise NotImplementedError(
@@ -707,11 +704,10 @@ class MLukeTokenizer(PreTrainedTokenizer):
             raise ValueError("entity_spans should be given as a list")
         elif len(entity_spans) > 0 and not isinstance(entity_spans[0], tuple):
             raise ValueError(
-                "entity_spans should be given as a list of tuples " "containing the start and end character indices"
+                "entity_spans should be given as a list of tuples containing the start and end character indices"
             )
 
         if entities is not None:
-
             if not isinstance(entities, list):
                 raise ValueError("If you specify entities, they should be given as a list")
 
@@ -730,7 +726,7 @@ class MLukeTokenizer(PreTrainedTokenizer):
         entities_pair: Optional[EntityInput] = None,
         entity_spans: Optional[EntitySpanInput] = None,
         entity_spans_pair: Optional[EntitySpanInput] = None,
-        **kwargs
+        **kwargs,
     ) -> Tuple[list, list, list, list, list, list]:
         def get_input_ids(text):
             tokens = self.tokenize(text, **kwargs)
@@ -771,7 +767,6 @@ class MLukeTokenizer(PreTrainedTokenizer):
         first_entity_token_spans, second_entity_token_spans = None, None
 
         if self.task is None:
-
             if entity_spans is None:
                 first_ids = get_input_ids(text)
             else:
@@ -854,7 +849,6 @@ class MLukeTokenizer(PreTrainedTokenizer):
                 first_ids = first_ids[:entity_token_start] + [special_token_id] + first_ids[entity_token_start:]
 
         elif self.task == "entity_span_classification":
-
             if not (isinstance(entity_spans, list) and len(entity_spans) > 0 and isinstance(entity_spans[0], tuple)):
                 raise ValueError(
                     "Entity spans should be provided as a list of tuples, "
@@ -971,7 +965,7 @@ class MLukeTokenizer(PreTrainedTokenizer):
         pair_entity_token_spans: Optional[List[Tuple[int, int]]] = None,
         add_special_tokens: bool = True,
         padding: Union[bool, str, PaddingStrategy] = False,
-        truncation: Union[bool, str, TruncationStrategy] = False,
+        truncation: Union[bool, str, TruncationStrategy] = None,
         max_length: Optional[int] = None,
         max_entity_length: Optional[int] = None,
         stride: int = 0,
@@ -985,7 +979,7 @@ class MLukeTokenizer(PreTrainedTokenizer):
         return_length: bool = False,
         verbose: bool = True,
         prepend_batch_axis: bool = False,
-        **kwargs
+        **kwargs,
     ) -> BatchEncoding:
         """
         Prepares a sequence of input id, entity id and entity span, or a pair of sequences of inputs ids, entity ids,
@@ -1119,7 +1113,8 @@ class MLukeTokenizer(PreTrainedTokenizer):
 
             if num_invalid_entities != 0:
                 logger.warning(
-                    f"{num_invalid_entities} entities are ignored because their entity spans are invalid due to the truncation of input tokens"
+                    f"{num_invalid_entities} entities are ignored because their entity spans are invalid due to the"
+                    " truncation of input tokens"
                 )
 
             if truncation_strategy != TruncationStrategy.DO_NOT_TRUNCATE and total_entity_len > max_entity_length:
@@ -1144,7 +1139,7 @@ class MLukeTokenizer(PreTrainedTokenizer):
             entity_position_ids = []
             entity_start_positions = []
             entity_end_positions = []
-            for (token_spans, offset) in (
+            for token_spans, offset in (
                 (valid_entity_token_spans, entity_token_offset),
                 (valid_pair_entity_token_spans, pair_entity_token_offset),
             ):
@@ -1222,7 +1217,7 @@ class MLukeTokenizer(PreTrainedTokenizer):
                 List[int]]]*) so you can use this method during preprocessing as well as in a PyTorch Dataloader
                 collate function. Instead of `List[int]` you can have tensors (numpy arrays, PyTorch tensors or
                 TensorFlow tensors), see the note above for the return type.
-            padding (`bool`, `str` or [`~file_utils.PaddingStrategy`], *optional*, defaults to `True`):
+            padding (`bool`, `str` or [`~utils.PaddingStrategy`], *optional*, defaults to `True`):
                  Select a strategy to pad the returned sequences (according to the model's padding side and padding
                  index) among:
 
@@ -1238,12 +1233,12 @@ class MLukeTokenizer(PreTrainedTokenizer):
                 The maximum length of the entity sequence.
             pad_to_multiple_of (`int`, *optional*):
                 If set will pad the sequence to a multiple of the provided value. This is especially useful to enable
-                the use of Tensor Cores on NVIDIA hardware with compute capability >= 7.5 (Volta).
+                the use of Tensor Cores on NVIDIA hardware with compute capability `>= 7.5` (Volta).
             return_attention_mask (`bool`, *optional*):
                 Whether to return the attention mask. If left to the default, will return the attention mask according
                 to the specific tokenizer's default, defined by the `return_outputs` attribute. [What are attention
                 masks?](../glossary#attention-mask)
-            return_tensors (`str` or [`~file_utils.TensorType`], *optional*):
+            return_tensors (`str` or [`~utils.TensorType`], *optional*):
                 If set, will return tensors instead of list of python integers. Acceptable values are:
 
                 - `'tf'`: Return TensorFlow `tf.constant` objects.
@@ -1254,7 +1249,7 @@ class MLukeTokenizer(PreTrainedTokenizer):
         """
         # If we have a list of dicts, let's convert it in a dict of lists
         # We do this to allow using this method as a collate_fn function in PyTorch Dataloader
-        if isinstance(encoded_inputs, (list, tuple)) and isinstance(encoded_inputs[0], (dict, BatchEncoding)):
+        if isinstance(encoded_inputs, (list, tuple)) and isinstance(encoded_inputs[0], Mapping):
             encoded_inputs = {key: [example[key] for example in encoded_inputs] for key in encoded_inputs[0].keys()}
 
         # The model's main input name, usually `input_ids`, has be passed for padding
@@ -1285,16 +1280,16 @@ class MLukeTokenizer(PreTrainedTokenizer):
                 first_element = required_input[index][0]
         # At this state, if `first_element` is still a list/tuple, it's an empty one so there is nothing to do.
         if not isinstance(first_element, (int, list, tuple)):
-            if is_tf_available() and _is_tensorflow(first_element):
+            if is_tf_tensor(first_element):
                 return_tensors = "tf" if return_tensors is None else return_tensors
-            elif is_torch_available() and _is_torch(first_element):
+            elif is_torch_tensor(first_element):
                 return_tensors = "pt" if return_tensors is None else return_tensors
             elif isinstance(first_element, np.ndarray):
                 return_tensors = "np" if return_tensors is None else return_tensors
             else:
                 raise ValueError(
                     f"type of {first_element} unknown: {type(first_element)}. "
-                    f"Should be one of a python, numpy, pytorch or tensorflow object."
+                    "Should be one of a python, numpy, pytorch or tensorflow object."
                 )
 
             for key, value in encoded_inputs.items():
@@ -1333,7 +1328,7 @@ class MLukeTokenizer(PreTrainedTokenizer):
 
         batch_outputs = {}
         for i in range(batch_size):
-            inputs = dict((k, v[i]) for k, v in encoded_inputs.items())
+            inputs = {k: v[i] for k, v in encoded_inputs.items()}
             outputs = self._pad(
                 inputs,
                 max_length=max_length,
@@ -1383,7 +1378,7 @@ class MLukeTokenizer(PreTrainedTokenizer):
                     - 'right': pads on the right of the sequences
             pad_to_multiple_of: (optional) Integer if set will pad the sequence to a multiple of the provided value.
                 This is especially useful to enable the use of Tensor Core on NVIDIA hardware with compute capability
-                >= 7.5 (Volta).
+                `>= 7.5` (Volta).
             return_attention_mask:
                 (optional) Set to False to avoid returning attention mask (default: set to model specifics)
         """
@@ -1507,7 +1502,7 @@ class MLukeTokenizer(PreTrainedTokenizer):
         )
 
         with open(entity_vocab_file, "w", encoding="utf-8") as f:
-            f.write(json.dumps(self.entity_vocab, ensure_ascii=False))
+            f.write(json.dumps(self.entity_vocab, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
 
         return out_vocab_file, entity_vocab_file
 

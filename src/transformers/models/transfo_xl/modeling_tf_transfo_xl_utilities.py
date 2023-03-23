@@ -20,7 +20,7 @@
 
 import tensorflow as tf
 
-from ...modeling_tf_utils import shape_list
+from ...tf_utils import shape_list
 
 
 class TFAdaptiveSoftmaxMask(tf.keras.layers.Layer):
@@ -111,7 +111,7 @@ class TFAdaptiveSoftmaxMask(tf.keras.layers.Layer):
     @staticmethod
     def _gather_logprob(logprob, target):
         lp_size = shape_list(logprob)
-        r = tf.range(lp_size[0])
+        r = tf.range(lp_size[0], dtype=target.dtype)
         idx = tf.stack([r, target], 1)
         return tf.gather_nd(logprob, idx)
 

@@ -19,10 +19,9 @@ from typing import List, Optional, Tuple
 
 from tokenizers import normalizers
 
-from ...file_utils import PaddingStrategy
 from ...tokenization_utils_base import BatchEncoding
 from ...tokenization_utils_fast import PreTrainedTokenizerFast
-from ...utils import logging
+from ...utils import PaddingStrategy, logging
 from .tokenization_realm import RealmTokenizer
 
 
@@ -32,24 +31,48 @@ VOCAB_FILES_NAMES = {"vocab_file": "vocab.txt", "tokenizer_file": "tokenizer.jso
 
 PRETRAINED_VOCAB_FILES_MAP = {
     "vocab_file": {
-        "google/realm-cc-news-pretrained-embedder": "https://huggingface.co/google/realm-cc-news-pretrained-embedder/resolve/main/vocab.txt",
-        "google/realm-cc-news-pretrained-encoder": "https://huggingface.co/google/realm-cc-news-pretrained-encoder/resolve/main/vocab.txt",
-        "google/realm-cc-news-pretrained-scorer": "https://huggingface.co/google/realm-cc-news-pretrained-scorer/resolve/main/vocab.txt",
-        "google/realm-cc-news-pretrained-openqa": "https://huggingface.co/google/realm-cc-news-pretrained-openqa/aresolve/main/vocab.txt",
+        "google/realm-cc-news-pretrained-embedder": (
+            "https://huggingface.co/google/realm-cc-news-pretrained-embedder/resolve/main/vocab.txt"
+        ),
+        "google/realm-cc-news-pretrained-encoder": (
+            "https://huggingface.co/google/realm-cc-news-pretrained-encoder/resolve/main/vocab.txt"
+        ),
+        "google/realm-cc-news-pretrained-scorer": (
+            "https://huggingface.co/google/realm-cc-news-pretrained-scorer/resolve/main/vocab.txt"
+        ),
+        "google/realm-cc-news-pretrained-openqa": (
+            "https://huggingface.co/google/realm-cc-news-pretrained-openqa/aresolve/main/vocab.txt"
+        ),
         "google/realm-orqa-nq-openqa": "https://huggingface.co/google/realm-orqa-nq-openqa/resolve/main/vocab.txt",
         "google/realm-orqa-nq-reader": "https://huggingface.co/google/realm-orqa-nq-reader/resolve/main/vocab.txt",
         "google/realm-orqa-wq-openqa": "https://huggingface.co/google/realm-orqa-wq-openqa/resolve/main/vocab.txt",
         "google/realm-orqa-wq-reader": "https://huggingface.co/google/realm-orqa-wq-reader/resolve/main/vocab.txt",
     },
     "tokenizer_file": {
-        "google/realm-cc-news-pretrained-embedder": "https://huggingface.co/google/realm-cc-news-pretrained-embedder/resolve/main/tokenizer.jsont",
-        "google/realm-cc-news-pretrained-encoder": "https://huggingface.co/google/realm-cc-news-pretrained-encoder/resolve/main/tokenizer.json",
-        "google/realm-cc-news-pretrained-scorer": "https://huggingface.co/google/realm-cc-news-pretrained-scorer/resolve/main/tokenizer.json",
-        "google/realm-cc-news-pretrained-openqa": "https://huggingface.co/google/realm-cc-news-pretrained-openqa/aresolve/main/tokenizer.json",
-        "google/realm-orqa-nq-openqa": "https://huggingface.co/google/realm-orqa-nq-openqa/resolve/main/tokenizer.json",
-        "google/realm-orqa-nq-reader": "https://huggingface.co/google/realm-orqa-nq-reader/resolve/main/tokenizer.json",
-        "google/realm-orqa-wq-openqa": "https://huggingface.co/google/realm-orqa-wq-openqa/resolve/main/tokenizer.json",
-        "google/realm-orqa-wq-reader": "https://huggingface.co/google/realm-orqa-wq-reader/resolve/main/tokenizer.json",
+        "google/realm-cc-news-pretrained-embedder": (
+            "https://huggingface.co/google/realm-cc-news-pretrained-embedder/resolve/main/tokenizer.jsont"
+        ),
+        "google/realm-cc-news-pretrained-encoder": (
+            "https://huggingface.co/google/realm-cc-news-pretrained-encoder/resolve/main/tokenizer.json"
+        ),
+        "google/realm-cc-news-pretrained-scorer": (
+            "https://huggingface.co/google/realm-cc-news-pretrained-scorer/resolve/main/tokenizer.json"
+        ),
+        "google/realm-cc-news-pretrained-openqa": (
+            "https://huggingface.co/google/realm-cc-news-pretrained-openqa/aresolve/main/tokenizer.json"
+        ),
+        "google/realm-orqa-nq-openqa": (
+            "https://huggingface.co/google/realm-orqa-nq-openqa/resolve/main/tokenizer.json"
+        ),
+        "google/realm-orqa-nq-reader": (
+            "https://huggingface.co/google/realm-orqa-nq-reader/resolve/main/tokenizer.json"
+        ),
+        "google/realm-orqa-wq-openqa": (
+            "https://huggingface.co/google/realm-orqa-wq-openqa/resolve/main/tokenizer.json"
+        ),
+        "google/realm-orqa-wq-reader": (
+            "https://huggingface.co/google/realm-orqa-wq-reader/resolve/main/tokenizer.json"
+        ),
     },
 }
 
@@ -137,7 +160,7 @@ class RealmTokenizerFast(PreTrainedTokenizerFast):
         mask_token="[MASK]",
         tokenize_chinese_chars=True,
         strip_accents=None,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(
             vocab_file,
@@ -236,7 +259,7 @@ class RealmTokenizerFast(PreTrainedTokenizerFast):
             if encoded_token_type_ids is not None:
                 output_data["token_type_ids"].append(encoded_token_type_ids)
 
-        output_data = dict((key, item) for key, item in output_data.items() if len(item) != 0)
+        output_data = {key: item for key, item in output_data.items() if len(item) != 0}
 
         return BatchEncoding(output_data, tensor_type=return_tensors)
 

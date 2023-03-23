@@ -18,29 +18,23 @@
 """
 import warnings
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import torch
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 from ...activations import ACT2FN
-from ...file_utils import (
+from ...modeling_utils import PoolerAnswerClass, PoolerEndLogits, PoolerStartLogits, PreTrainedModel, SequenceSummary
+from ...pytorch_utils import apply_chunking_to_forward
+from ...utils import (
     ModelOutput,
     add_code_sample_docstrings,
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
+    logging,
     replace_return_docstrings,
 )
-from ...modeling_utils import (
-    PoolerAnswerClass,
-    PoolerEndLogits,
-    PoolerStartLogits,
-    PreTrainedModel,
-    SequenceSummary,
-    apply_chunking_to_forward,
-)
-from ...utils import logging
 from .configuration_xlnet import XLNetConfig
 
 
@@ -48,7 +42,6 @@ logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "xlnet-base-cased"
 _CONFIG_FOR_DOC = "XLNetConfig"
-_TOKENIZER_FOR_DOC = "XLNetTokenizer"
 
 XLNET_PRETRAINED_MODEL_ARCHIVE_LIST = [
     "xlnet-base-cased",
@@ -863,7 +856,7 @@ XLNET_INPUTS_DOCSTRING = r"""
         input_ids (`torch.LongTensor` of shape `({0})`):
             Indices of input sequence tokens in the vocabulary.
 
-            Indices can be obtained using [`XLNetTokenizer`]. See [`PreTrainedTokenizer.encode`] and
+            Indices can be obtained using [`AutoTokenizer`]. See [`PreTrainedTokenizer.encode`] and
             [`PreTrainedTokenizer.__call__`] for details.
 
             [What are input IDs?](../glossary#input-ids)
@@ -927,7 +920,7 @@ XLNET_INPUTS_DOCSTRING = r"""
             Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
             more detail.
         return_dict (`bool`, *optional*):
-            Whether or not to return a [`~file_utils.ModelOutput`] instead of a plain tuple.
+            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
 """
 
 
@@ -1062,34 +1055,31 @@ class XLNetModel(XLNetPreTrainedModel):
                 fwd_pos_seq = fwd_pos_seq.clamp(-self.clamp_len, self.clamp_len)
             pos_emb = self.positional_embedding(fwd_pos_seq, inv_freq, bsz)
 
-        pos_emb = pos_emb.to(self.device)
         return pos_emb
 
     @add_start_docstrings_to_model_forward(XLNET_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @add_code_sample_docstrings(
-        processor_class=_TOKENIZER_FOR_DOC,
         checkpoint=_CHECKPOINT_FOR_DOC,
         output_type=XLNetModelOutput,
         config_class=_CONFIG_FOR_DOC,
     )
     def forward(
         self,
-        input_ids=None,
-        attention_mask=None,
-        mems=None,
-        perm_mask=None,
-        target_mapping=None,
-        token_type_ids=None,
-        input_mask=None,
-        head_mask=None,
-        inputs_embeds=None,
-        use_mems=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        mems: Optional[torch.Tensor] = None,
+        perm_mask: Optional[torch.Tensor] = None,
+        target_mapping: Optional[torch.Tensor] = None,
+        token_type_ids: Optional[torch.Tensor] = None,
+        input_mask: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        use_mems: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
         **kwargs,  # delete after depreciation warning is removed
-    ):
-
+    ) -> Union[Tuple, XLNetModelOutput]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -1098,7 +1088,8 @@ class XLNetModel(XLNetPreTrainedModel):
 
         if "use_cache" in kwargs:
             warnings.warn(
-                "The `use_cache` argument is deprecated and will be removed in a future version, use `use_mems` instead.",
+                "The `use_cache` argument is deprecated and will be removed in a future version, use `use_mems`"
+                " instead.",
                 FutureWarning,
             )
             use_mems = kwargs["use_cache"]
@@ -1211,6 +1202,7 @@ class XLNetModel(XLNetPreTrainedModel):
 
         # Positional encoding
         pos_emb = self.relative_positional_encoding(qlen, klen, bsz=bsz)
+        pos_emb = pos_emb.to(output_h.device)
         pos_emb = self.dropout(pos_emb)
 
         # Prepare head mask if needed
@@ -1301,6 +1293,8 @@ class XLNetModel(XLNetPreTrainedModel):
     XLNET_START_DOCSTRING,
 )
 class XLNetLMHeadModel(XLNetPreTrainedModel):
+    _keys_to_ignore_on_load_missing = [r"lm_loss.weight"]
+
     def __init__(self, config):
         super().__init__(config)
         self.attn_type = config.attn_type
@@ -1318,7 +1312,7 @@ class XLNetLMHeadModel(XLNetPreTrainedModel):
     def set_output_embeddings(self, new_embeddings):
         self.lm_loss = new_embeddings
 
-    def prepare_inputs_for_generation(self, input_ids, past=None, use_mems=None, **kwargs):
+    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, use_mems=None, **kwargs):
         # Add dummy token at the end (no attention on this one)
 
         effective_batch_size = input_ids.shape[0]
@@ -1329,7 +1323,7 @@ class XLNetLMHeadModel(XLNetPreTrainedModel):
         # offset = 1; offset = 2 seems to have slightly better computation.
         offset = 2
 
-        if past:
+        if past_key_values:
             input_ids = torch.cat([input_ids[:, -offset:], dummy_token], dim=1)
         else:
             input_ids = torch.cat([input_ids, dummy_token], dim=1)
@@ -1355,8 +1349,8 @@ class XLNetLMHeadModel(XLNetPreTrainedModel):
         }
 
         # if past is defined in model kwargs then use it for faster decoding
-        if past:
-            inputs["mems"] = tuple(layer_past[:-offset, :, :] for layer_past in past)
+        if past_key_values:
+            inputs["mems"] = tuple(layer_past[:-offset, :, :] for layer_past in past_key_values)
 
         return inputs
 
@@ -1364,22 +1358,22 @@ class XLNetLMHeadModel(XLNetPreTrainedModel):
     @replace_return_docstrings(output_type=XLNetLMHeadModelOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
-        input_ids=None,
-        attention_mask=None,
-        mems=None,
-        perm_mask=None,
-        target_mapping=None,
-        token_type_ids=None,
-        input_mask=None,
-        head_mask=None,
-        inputs_embeds=None,
-        labels=None,
-        use_mems=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        mems: Optional[torch.Tensor] = None,
+        perm_mask: Optional[torch.Tensor] = None,
+        target_mapping: Optional[torch.Tensor] = None,
+        token_type_ids: Optional[torch.Tensor] = None,
+        input_mask: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        use_mems: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
         **kwargs,  # delete when `use_cache` is removed in XLNetModel
-    ):
+    ) -> Union[Tuple, XLNetLMHeadModelOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, num_predict)`, *optional*):
             Labels for masked language modeling. `num_predict` corresponds to `target_mapping.shape[1]`. If
@@ -1397,56 +1391,56 @@ class XLNetLMHeadModel(XLNetPreTrainedModel):
         Examples:
 
         ```python
-        >>> from transformers import XLNetTokenizer, XLNetLMHeadModel
+        >>> from transformers import AutoTokenizer, XLNetLMHeadModel
         >>> import torch
 
-        >>> tokenizer = XLNetTokenizer.from_pretrained("xlnet-large-cased")
+        >>> tokenizer = AutoTokenizer.from_pretrained("xlnet-large-cased")
         >>> model = XLNetLMHeadModel.from_pretrained("xlnet-large-cased")
 
         >>> # We show how to setup inputs to predict a next token using a bi-directional context.
         >>> input_ids = torch.tensor(
         ...     tokenizer.encode("Hello, my dog is very <mask>", add_special_tokens=False)
-        >>> ).unsqueeze(
+        ... ).unsqueeze(
         ...     0
-        >>> )  # We will predict the masked token
+        ... )  # We will predict the masked token
         >>> perm_mask = torch.zeros((1, input_ids.shape[1], input_ids.shape[1]), dtype=torch.float)
         >>> perm_mask[:, :, -1] = 1.0  # Previous tokens don't see last token
         >>> target_mapping = torch.zeros(
         ...     (1, 1, input_ids.shape[1]), dtype=torch.float
-        >>> )  # Shape [1, 1, seq_length] => let's predict one token
+        ... )  # Shape [1, 1, seq_length] => let's predict one token
         >>> target_mapping[
         ...     0, 0, -1
-        >>> ] = 1.0  # Our first (and only) prediction will be the last token of the sequence (the masked token)
+        ... ] = 1.0  # Our first (and only) prediction will be the last token of the sequence (the masked token)
 
         >>> outputs = model(input_ids, perm_mask=perm_mask, target_mapping=target_mapping)
         >>> next_token_logits = outputs[
         ...     0
-        >>> ]  # Output has shape [target_mapping.size(0), target_mapping.size(1), config.vocab_size]
+        ... ]  # Output has shape [target_mapping.size(0), target_mapping.size(1), config.vocab_size]
 
         >>> # The same way can the XLNetLMHeadModel be used to be trained by standard auto-regressive language modeling.
         >>> input_ids = torch.tensor(
         ...     tokenizer.encode("Hello, my dog is very <mask>", add_special_tokens=False)
-        >>> ).unsqueeze(
+        ... ).unsqueeze(
         ...     0
-        >>> )  # We will predict the masked token
+        ... )  # We will predict the masked token
         >>> labels = torch.tensor(tokenizer.encode("cute", add_special_tokens=False)).unsqueeze(0)
         >>> assert labels.shape[0] == 1, "only one word will be predicted"
         >>> perm_mask = torch.zeros((1, input_ids.shape[1], input_ids.shape[1]), dtype=torch.float)
         >>> perm_mask[
         ...     :, :, -1
-        >>> ] = 1.0  # Previous tokens don't see last token as is done in standard auto-regressive lm training
+        ... ] = 1.0  # Previous tokens don't see last token as is done in standard auto-regressive lm training
         >>> target_mapping = torch.zeros(
         ...     (1, 1, input_ids.shape[1]), dtype=torch.float
-        >>> )  # Shape [1, 1, seq_length] => let's predict one token
+        ... )  # Shape [1, 1, seq_length] => let's predict one token
         >>> target_mapping[
         ...     0, 0, -1
-        >>> ] = 1.0  # Our first (and only) prediction will be the last token of the sequence (the masked token)
+        ... ] = 1.0  # Our first (and only) prediction will be the last token of the sequence (the masked token)
 
         >>> outputs = model(input_ids, perm_mask=perm_mask, target_mapping=target_mapping, labels=labels)
         >>> loss = outputs.loss
         >>> next_token_logits = (
         ...     outputs.logits
-        >>> )  # Logits have shape [target_mapping.size(0), target_mapping.size(1), config.vocab_size]
+        ... )  # Logits have shape [target_mapping.size(0), target_mapping.size(1), config.vocab_size]
         ```"""
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -1519,29 +1513,28 @@ class XLNetForSequenceClassification(XLNetPreTrainedModel):
 
     @add_start_docstrings_to_model_forward(XLNET_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @add_code_sample_docstrings(
-        processor_class=_TOKENIZER_FOR_DOC,
         checkpoint=_CHECKPOINT_FOR_DOC,
         output_type=XLNetForSequenceClassificationOutput,
         config_class=_CONFIG_FOR_DOC,
     )
     def forward(
         self,
-        input_ids=None,
-        attention_mask=None,
-        mems=None,
-        perm_mask=None,
-        target_mapping=None,
-        token_type_ids=None,
-        input_mask=None,
-        head_mask=None,
-        inputs_embeds=None,
-        labels=None,
-        use_mems=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        mems: Optional[torch.Tensor] = None,
+        perm_mask: Optional[torch.Tensor] = None,
+        target_mapping: Optional[torch.Tensor] = None,
+        token_type_ids: Optional[torch.Tensor] = None,
+        input_mask: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        use_mems: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
         **kwargs,  # delete when `use_cache` is removed in XLNetModel
-    ):
+    ) -> Union[Tuple, XLNetForSequenceClassificationOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
@@ -1627,29 +1620,28 @@ class XLNetForTokenClassification(XLNetPreTrainedModel):
 
     @add_start_docstrings_to_model_forward(XLNET_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @add_code_sample_docstrings(
-        processor_class=_TOKENIZER_FOR_DOC,
         checkpoint=_CHECKPOINT_FOR_DOC,
         output_type=XLNetForTokenClassificationOutput,
         config_class=_CONFIG_FOR_DOC,
     )
     def forward(
         self,
-        input_ids=None,
-        attention_mask=None,
-        mems=None,
-        perm_mask=None,
-        target_mapping=None,
-        token_type_ids=None,
-        input_mask=None,
-        head_mask=None,
-        inputs_embeds=None,
-        labels=None,
-        use_mems=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        mems: Optional[torch.Tensor] = None,
+        perm_mask: Optional[torch.Tensor] = None,
+        target_mapping: Optional[torch.Tensor] = None,
+        token_type_ids: Optional[torch.Tensor] = None,
+        input_mask: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        use_mems: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
         **kwargs,  # delete when `use_cache` is removed in XLNetModel
-    ):
+    ) -> Union[Tuple, XLNetForTokenClassificationOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Labels for computing the multiple choice classification loss. Indices should be in `[0, ..., num_choices]`
@@ -1715,29 +1707,28 @@ class XLNetForMultipleChoice(XLNetPreTrainedModel):
 
     @add_start_docstrings_to_model_forward(XLNET_INPUTS_DOCSTRING.format("batch_size, num_choices, sequence_length"))
     @add_code_sample_docstrings(
-        processor_class=_TOKENIZER_FOR_DOC,
         checkpoint=_CHECKPOINT_FOR_DOC,
         output_type=XLNetForMultipleChoiceOutput,
         config_class=_CONFIG_FOR_DOC,
     )
     def forward(
         self,
-        input_ids=None,
-        token_type_ids=None,
-        input_mask=None,
-        attention_mask=None,
-        mems=None,
-        perm_mask=None,
-        target_mapping=None,
-        head_mask=None,
-        inputs_embeds=None,
-        labels=None,
-        use_mems=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
+        input_ids: Optional[torch.Tensor] = None,
+        token_type_ids: Optional[torch.Tensor] = None,
+        input_mask: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        mems: Optional[torch.Tensor] = None,
+        perm_mask: Optional[torch.Tensor] = None,
+        target_mapping: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        use_mems: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
         **kwargs,  # delete when `use_cache` is removed in XLNetModel
-    ):
+    ) -> Union[Tuple, XLNetForMultipleChoiceOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Labels for computing the multiple choice classification loss. Indices should be in `[0, ...,
@@ -1819,30 +1810,29 @@ class XLNetForQuestionAnsweringSimple(XLNetPreTrainedModel):
 
     @add_start_docstrings_to_model_forward(XLNET_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @add_code_sample_docstrings(
-        processor_class=_TOKENIZER_FOR_DOC,
         checkpoint=_CHECKPOINT_FOR_DOC,
         output_type=XLNetForQuestionAnsweringSimpleOutput,
         config_class=_CONFIG_FOR_DOC,
     )
     def forward(
         self,
-        input_ids=None,
-        attention_mask=None,
-        mems=None,
-        perm_mask=None,
-        target_mapping=None,
-        token_type_ids=None,
-        input_mask=None,
-        head_mask=None,
-        inputs_embeds=None,
-        start_positions=None,
-        end_positions=None,
-        use_mems=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        mems: Optional[torch.Tensor] = None,
+        perm_mask: Optional[torch.Tensor] = None,
+        target_mapping: Optional[torch.Tensor] = None,
+        token_type_ids: Optional[torch.Tensor] = None,
+        input_mask: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        start_positions: Optional[torch.Tensor] = None,
+        end_positions: Optional[torch.Tensor] = None,
+        use_mems: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
         **kwargs,  # delete when `use_cache` is removed in XLNetModel
-    ):
+    ) -> Union[Tuple, XLNetForQuestionAnsweringSimpleOutput]:
         r"""
         start_positions (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Labels for position (index) of the start of the labelled span for computing the token classification loss.
@@ -1935,26 +1925,26 @@ class XLNetForQuestionAnswering(XLNetPreTrainedModel):
     @replace_return_docstrings(output_type=XLNetForQuestionAnsweringOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
-        input_ids=None,
-        attention_mask=None,
-        mems=None,
-        perm_mask=None,
-        target_mapping=None,
-        token_type_ids=None,
-        input_mask=None,
-        head_mask=None,
-        inputs_embeds=None,
-        start_positions=None,
-        end_positions=None,
-        is_impossible=None,
-        cls_index=None,
-        p_mask=None,
-        use_mems=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        mems: Optional[torch.Tensor] = None,
+        perm_mask: Optional[torch.Tensor] = None,
+        target_mapping: Optional[torch.Tensor] = None,
+        token_type_ids: Optional[torch.Tensor] = None,
+        input_mask: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        start_positions: Optional[torch.Tensor] = None,
+        end_positions: Optional[torch.Tensor] = None,
+        is_impossible: Optional[torch.Tensor] = None,
+        cls_index: Optional[torch.Tensor] = None,
+        p_mask: Optional[torch.Tensor] = None,
+        use_mems: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
         **kwargs,  # delete when `use_cache` is removed in XLNetModel
-    ):
+    ) -> Union[Tuple, XLNetForQuestionAnsweringOutput]:
         r"""
         start_positions (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Labels for position (index) of the start of the labelled span for computing the token classification loss.
@@ -1978,15 +1968,15 @@ class XLNetForQuestionAnswering(XLNetPreTrainedModel):
         Example:
 
         ```python
-        >>> from transformers import XLNetTokenizer, XLNetForQuestionAnswering
+        >>> from transformers import AutoTokenizer, XLNetForQuestionAnswering
         >>> import torch
 
-        >>> tokenizer = XLNetTokenizer.from_pretrained("xlnet-base-cased")
+        >>> tokenizer = AutoTokenizer.from_pretrained("xlnet-base-cased")
         >>> model = XLNetForQuestionAnswering.from_pretrained("xlnet-base-cased")
 
         >>> input_ids = torch.tensor(tokenizer.encode("Hello, my dog is cute", add_special_tokens=True)).unsqueeze(
         ...     0
-        >>> )  # Batch size 1
+        ... )  # Batch size 1
         >>> start_positions = torch.tensor([1])
         >>> end_positions = torch.tensor([3])
         >>> outputs = model(input_ids, start_positions=start_positions, end_positions=end_positions)

@@ -48,8 +48,8 @@ class T5Config(PretrainedConfig):
         d_model (`int`, *optional*, defaults to 512):
             Size of the encoder layers and the pooler layer.
         d_kv (`int`, *optional*, defaults to 64):
-            Size of the key, query, value projections per attention head. `d_kv` has to be equal to `d_model //
-            num_heads`.
+            Size of the key, query, value projections per attention head. The `inner_dim` of the projection layer will
+            be defined as `num_heads * d_kv`.
         d_ff (`int`, *optional*, defaults to 2048):
             Size of the intermediate feed forward layer in each `T5Block`.
         num_layers (`int`, *optional*, defaults to 6):
@@ -60,6 +60,8 @@ class T5Config(PretrainedConfig):
             Number of attention heads for each attention layer in the Transformer encoder.
         relative_attention_num_buckets (`int`, *optional*, defaults to 32):
             The number of buckets to use for each attention layer.
+        relative_attention_max_distance (`int`, *optional*, defaults to 128):
+            The maximum distance of the longer sequences for the bucket separation.
         dropout_rate (`float`, *optional*, defaults to 0.1):
             The ratio for all dropout layers.
         layer_norm_eps (`float`, *optional*, defaults to 1e-6):
@@ -87,6 +89,7 @@ class T5Config(PretrainedConfig):
         num_decoder_layers=None,
         num_heads=8,
         relative_attention_num_buckets=32,
+        relative_attention_max_distance=128,
         dropout_rate=0.1,
         layer_norm_epsilon=1e-6,
         initializer_factor=1.0,
@@ -95,7 +98,7 @@ class T5Config(PretrainedConfig):
         use_cache=True,
         pad_token_id=0,
         eos_token_id=1,
-        **kwargs
+        **kwargs,
     ):
         self.vocab_size = vocab_size
         self.d_model = d_model
@@ -107,11 +110,28 @@ class T5Config(PretrainedConfig):
         )  # default = symmetry
         self.num_heads = num_heads
         self.relative_attention_num_buckets = relative_attention_num_buckets
+        self.relative_attention_max_distance = relative_attention_max_distance
         self.dropout_rate = dropout_rate
         self.layer_norm_epsilon = layer_norm_epsilon
         self.initializer_factor = initializer_factor
         self.feed_forward_proj = feed_forward_proj
         self.use_cache = use_cache
+
+        act_info = self.feed_forward_proj.split("-")
+        self.dense_act_fn = act_info[-1]
+        self.is_gated_act = act_info[0] == "gated"
+
+        if len(act_info) > 1 and act_info[0] != "gated" or len(act_info) > 2:
+            raise ValueError(
+                f"`feed_forward_proj`: {feed_forward_proj} is not a valid activation function of the dense layer."
+                "Please make sure `feed_forward_proj` is of the format `gated-{ACT_FN}` or `{ACT_FN}`, e.g. "
+                "'gated-gelu' or 'relu'"
+            )
+
+        # for backwards compatibility
+        if feed_forward_proj == "gated-gelu":
+            self.dense_act_fn = "gelu_new"
+
         super().__init__(
             pad_token_id=pad_token_id,
             eos_token_id=eos_token_id,

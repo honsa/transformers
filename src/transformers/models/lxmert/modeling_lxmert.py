@@ -19,22 +19,22 @@ import math
 import os
 import warnings
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 
 import torch
 from torch import nn
 from torch.nn import CrossEntropyLoss, SmoothL1Loss
 
 from ...activations import ACT2FN, gelu
-from ...file_utils import (
+from ...modeling_utils import PreTrainedModel
+from ...utils import (
     ModelOutput,
     add_code_sample_docstrings,
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
+    logging,
     replace_return_docstrings,
 )
-from ...modeling_utils import PreTrainedModel
-from ...utils import logging
 from .configuration_lxmert import LxmertConfig
 
 
@@ -42,7 +42,6 @@ logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "unc-nlp/lxmert-base-uncased"
 _CONFIG_FOR_DOC = "LxmertConfig"
-_TOKENIZER_FOR_DOC = "LxmertTokenizer"
 
 LXMERT_PRETRAINED_MODEL_ARCHIVE_LIST = [
     "unc-nlp/lxmert-base-uncased",
@@ -180,7 +179,7 @@ class LxmertForPreTrainingOutput(ModelOutput):
 
     """
 
-    loss: [torch.FloatTensor] = None
+    loss: Optional[torch.FloatTensor] = None
     prediction_logits: Optional[torch.FloatTensor] = None
     cross_relationship_score: Optional[torch.FloatTensor] = None
     question_answering_score: Optional[torch.FloatTensor] = None
@@ -336,7 +335,7 @@ class LxmertAttention(nn.Module):
             self.num_attention_heads,
             self.attention_head_size,
         )
-        x = x.view(*new_x_shape)
+        x = x.view(new_x_shape)
         return x.permute(0, 2, 1, 3)
 
     def forward(self, hidden_states, context, attention_mask=None, output_attentions=False):
@@ -365,7 +364,7 @@ class LxmertAttention(nn.Module):
         context_layer = torch.matmul(attention_probs, value_layer)
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.head_size,)
-        context_layer = context_layer.view(*new_context_layer_shape)
+        context_layer = context_layer.view(new_context_layer_shape)
 
         outputs = (context_layer, attention_probs) if output_attentions else (context_layer,)
         return outputs
@@ -527,7 +526,6 @@ class LxmertXLayer(nn.Module):
         visual_attention_mask,
         output_attentions=False,
     ):
-
         lang_att_output, visual_att_output = self.cross_att(
             lang_input=lang_feats,
             lang_attention_mask=lang_attention_mask,
@@ -610,7 +608,6 @@ class LxmertEncoder(nn.Module):
         visual_attention_mask=None,
         output_attentions=None,
     ):
-
         vision_hidden_states = ()
         language_hidden_states = ()
         vision_attentions = () if output_attentions or self.config.output_attentions else None
@@ -739,7 +736,7 @@ class LxmertVisualObjHead(nn.Module):
             visual_losses["obj"] = {"shape": (-1,), "num": config.num_object_labels}
         if config.visual_attr_loss:
             visual_losses["attr"] = {"shape": (-1,), "num": config.num_attr_labels}
-        if config.visual_obj_loss:
+        if config.visual_feat_loss:
             visual_losses["feat"] = {
                 "shape": (-1, config.visual_feat_dim),
                 "num": config.visual_feat_dim,
@@ -803,7 +800,7 @@ LXMERT_START_DOCSTRING = r"""
 
     The LXMERT model was proposed in [LXMERT: Learning Cross-Modality Encoder Representations from
     Transformers](https://arxiv.org/abs/1908.07490) by Hao Tan and Mohit Bansal. It's a vision and language transformer
-    model, pretrained on a variety of multi-modal datasets comprising of GQA, VQAv2.0, MCSCOCO captions, and Visual
+    model, pretrained on a variety of multi-modal datasets comprising of GQA, VQAv2.0, MSCOCO captions, and Visual
     genome, using a combination of masked language modeling, region of interest feature regression, cross entropy loss
     for question answering attribute prediction, and object tag prediction.
 
@@ -827,7 +824,7 @@ LXMERT_INPUTS_DOCSTRING = r"""
         input_ids (`torch.LongTensor` of shape `({0})`):
             Indices of input sequence tokens in the vocabulary.
 
-            Indices can be obtained using [`LxmertTokenizer`]. See [`PreTrainedTokenizer.encode`] and
+            Indices can be obtained using [`AutoTokenizer`]. See [`PreTrainedTokenizer.encode`] and
             [`PreTrainedTokenizer.__call__`] for details.
 
             [What are input IDs?](../glossary#input-ids)
@@ -875,7 +872,7 @@ LXMERT_INPUTS_DOCSTRING = r"""
             Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
             more detail.
         return_dict (`bool`, *optional*):
-            Whether or not to return a [`~file_utils.ModelOutput`] instead of a plain tuple.
+            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
 """
 
 
@@ -900,25 +897,23 @@ class LxmertModel(LxmertPreTrainedModel):
 
     @add_start_docstrings_to_model_forward(LXMERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @add_code_sample_docstrings(
-        processor_class=_TOKENIZER_FOR_DOC,
         checkpoint=_CHECKPOINT_FOR_DOC,
         output_type=LxmertModelOutput,
         config_class=_CONFIG_FOR_DOC,
     )
     def forward(
         self,
-        input_ids=None,
-        visual_feats=None,
-        visual_pos=None,
-        attention_mask=None,
-        visual_attention_mask=None,
-        token_type_ids=None,
-        inputs_embeds=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-    ):
-
+        input_ids: Optional[torch.LongTensor] = None,
+        visual_feats: Optional[torch.FloatTensor] = None,
+        visual_pos: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        visual_attention_mask: Optional[torch.FloatTensor] = None,
+        token_type_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[LxmertModelOutput, Tuple[torch.FloatTensor]]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -955,17 +950,17 @@ class LxmertModel(LxmertPreTrainedModel):
 
         # Since attention_mask is 1.0 for positions we want to attend and 0.0 for
         # masked positions, this operation will create a tensor which is 0.0 for
-        # positions we want to attend and -10000.0 for masked positions.
+        # positions we want to attend and the dtype's smallest value for masked positions.
         # Since we are adding it to the raw scores before the softmax, this is
         # effectively the same as removing these entirely.
         extended_attention_mask = extended_attention_mask.to(dtype=self.dtype)
-        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+        extended_attention_mask = (1.0 - extended_attention_mask) * torch.finfo(self.dtype).min
 
         # Process the visual attention mask
         if visual_attention_mask is not None:
             extended_visual_attention_mask = visual_attention_mask.unsqueeze(1).unsqueeze(2)
             extended_visual_attention_mask = extended_visual_attention_mask.to(dtype=self.dtype)
-            extended_visual_attention_mask = (1.0 - extended_visual_attention_mask) * -10000.0
+            extended_visual_attention_mask = (1.0 - extended_visual_attention_mask) * torch.finfo(self.dtype).min
         else:
             extended_visual_attention_mask = None
 
@@ -1023,6 +1018,8 @@ class LxmertModel(LxmertPreTrainedModel):
     LXMERT_START_DOCSTRING,
 )
 class LxmertForPreTraining(LxmertPreTrainedModel):
+    _keys_to_ignore_on_load_missing = ["cls.predictions.decoder.weight"]
+
     def __init__(self, config):
         super().__init__(config)
         # Configuration
@@ -1070,7 +1067,7 @@ class LxmertForPreTraining(LxmertPreTrainedModel):
                 "num": config.num_attr_labels,
                 "loss": "visual_ce",
             }
-        if config.visual_obj_loss:
+        if config.visual_feat_loss:
             visual_losses["feat"] = {
                 "shape": (-1, config.visual_feat_dim),
                 "num": config.visual_feat_dim,
@@ -1110,7 +1107,7 @@ class LxmertForPreTraining(LxmertPreTrainedModel):
 
     def get_qa_logit_layer(self) -> nn.Module:
         """
-        Returns the the linear layer that produces question answering logits.
+        Returns the linear layer that produces question answering logits.
 
         Returns:
             `nn.Module`: A torch module mapping the question answering prediction hidden states or `None` if LXMERT
@@ -1123,7 +1120,6 @@ class LxmertForPreTraining(LxmertPreTrainedModel):
         self.answer_head.logit_fc[-1] = qa_logit_layer
 
     def _get_resized_qa_labels(self, cur_qa_logit_layer, num_labels):
-
         if num_labels is None:
             return cur_qa_logit_layer
 
@@ -1154,22 +1150,22 @@ class LxmertForPreTraining(LxmertPreTrainedModel):
     @replace_return_docstrings(output_type=LxmertForPreTrainingOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
-        input_ids=None,
-        visual_feats=None,
-        visual_pos=None,
-        attention_mask=None,
-        visual_attention_mask=None,
-        token_type_ids=None,
-        inputs_embeds=None,
-        labels=None,
-        obj_labels=None,
-        matched_label=None,
-        ans=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
+        input_ids: Optional[torch.LongTensor] = None,
+        visual_feats: Optional[torch.FloatTensor] = None,
+        visual_pos: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        visual_attention_mask: Optional[torch.FloatTensor] = None,
+        token_type_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        obj_labels: Optional[Dict[str, Tuple[torch.FloatTensor, torch.FloatTensor]]] = None,
+        matched_label: Optional[torch.LongTensor] = None,
+        ans: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
         **kwargs,
-    ):
+    ) -> Union[LxmertForPreTrainingOutput, Tuple[torch.FloatTensor]]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should be in `[-100, 0, ...,
@@ -1193,7 +1189,8 @@ class LxmertForPreTraining(LxmertPreTrainedModel):
 
         if "masked_lm_labels" in kwargs:
             warnings.warn(
-                "The `masked_lm_labels` argument is deprecated and will be removed in a future version, use `labels` instead.",
+                "The `masked_lm_labels` argument is deprecated and will be removed in a future version, use `labels`"
+                " instead.",
                 FutureWarning,
             )
             labels = kwargs.pop("masked_lm_labels")
@@ -1252,7 +1249,7 @@ class LxmertForPreTraining(LxmertPreTrainedModel):
                 visual_prediction_scores = visual_prediction_scores_dict[key]
                 visual_loss = visual_loss_fct(
                     visual_prediction_scores.view(-1, output_dim),
-                    label.view(*label_shape),
+                    label.view(label_shape),
                 )
                 if visual_loss.dim() > 1:  # Regression Losses
                     visual_loss = visual_loss.mean(1)
@@ -1340,7 +1337,7 @@ class LxmertForQuestionAnswering(LxmertPreTrainedModel):
 
     def get_qa_logit_layer(self) -> nn.Module:
         """
-        Returns the the linear layer that produces question answering logits
+        Returns the linear layer that produces question answering logits
 
         Returns:
             `nn.Module`: A torch module mapping the question answering prediction hidden states. `None`: A NoneType
@@ -1354,7 +1351,6 @@ class LxmertForQuestionAnswering(LxmertPreTrainedModel):
         self.answer_head.logit_fc[-1] = qa_logit_layer
 
     def _get_resized_qa_labels(self, cur_qa_logit_layer, num_labels):
-
         if num_labels is None:
             return cur_qa_logit_layer
 
@@ -1383,25 +1379,24 @@ class LxmertForQuestionAnswering(LxmertPreTrainedModel):
 
     @add_start_docstrings_to_model_forward(LXMERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @add_code_sample_docstrings(
-        processor_class=_TOKENIZER_FOR_DOC,
         checkpoint=_CHECKPOINT_FOR_DOC,
         output_type=LxmertForQuestionAnsweringOutput,
         config_class=_CONFIG_FOR_DOC,
     )
     def forward(
         self,
-        input_ids=None,
-        visual_feats=None,
-        visual_pos=None,
-        attention_mask=None,
-        visual_attention_mask=None,
-        token_type_ids=None,
-        inputs_embeds=None,
-        labels=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-    ):
+        input_ids: Optional[torch.LongTensor] = None,
+        visual_feats: Optional[torch.FloatTensor] = None,
+        visual_pos: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        visual_attention_mask: Optional[torch.FloatTensor] = None,
+        token_type_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[LxmertForQuestionAnsweringOutput, Tuple[torch.FloatTensor]]:
         r"""
         labels: (`Torch.Tensor` of shape `(batch_size)`, *optional*):
             A one-hot representation of the correct answer

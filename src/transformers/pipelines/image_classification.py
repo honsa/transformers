@@ -1,13 +1,13 @@
 from typing import List, Union
 
-from ..file_utils import (
+from ..utils import (
     add_end_docstrings,
     is_tf_available,
     is_torch_available,
     is_vision_available,
+    logging,
     requires_backends,
 )
-from ..utils import logging
 from .base import PIPELINE_INIT_ARGS, Pipeline
 
 
@@ -20,6 +20,7 @@ if is_tf_available():
     import tensorflow as tf
 
     from ..models.auto.modeling_tf_auto import TF_MODEL_FOR_IMAGE_CLASSIFICATION_MAPPING
+    from ..tf_utils import stable_softmax
 
 if is_torch_available():
     from ..models.auto.modeling_auto import MODEL_FOR_IMAGE_CLASSIFICATION_MAPPING
@@ -32,6 +33,18 @@ class ImageClassificationPipeline(Pipeline):
     """
     Image classification pipeline using any `AutoModelForImageClassification`. This pipeline predicts the class of an
     image.
+
+    Example:
+
+    ```python
+    >>> from transformers import pipeline
+
+    >>> classifier = pipeline(model="microsoft/beit-base-patch16-224-pt22k-ft22k")
+    >>> classifier("https://huggingface.co/datasets/Narsil/image_dummy/raw/main/parrots.png")
+    [{'score': 0.442, 'label': 'macaw'}, {'score': 0.088, 'label': 'popinjay'}, {'score': 0.075, 'label': 'parrot'}, {'score': 0.073, 'label': 'parodist, lampooner'}, {'score': 0.046, 'label': 'poll, poll_parrot'}]
+    ```
+
+    Learn more about the basics of using a pipeline in the [pipeline tutorial](../pipeline_tutorial)
 
     This image classification pipeline can currently be loaded from [`pipeline`] using the following task identifier:
     `"image-classification"`.
@@ -88,7 +101,7 @@ class ImageClassificationPipeline(Pipeline):
 
     def preprocess(self, image):
         image = load_image(image)
-        model_inputs = self.feature_extractor(images=image, return_tensors=self.framework)
+        model_inputs = self.image_processor(images=image, return_tensors=self.framework)
         return model_inputs
 
     def _forward(self, model_inputs):
@@ -103,7 +116,7 @@ class ImageClassificationPipeline(Pipeline):
             probs = model_outputs.logits.softmax(-1)[0]
             scores, ids = probs.topk(top_k)
         elif self.framework == "tf":
-            probs = tf.nn.softmax(model_outputs.logits, axis=-1)[0]
+            probs = stable_softmax(model_outputs.logits, axis=-1)[0]
             topk = tf.math.top_k(probs, k=top_k)
             scores, ids = topk.values.numpy(), topk.indices.numpy()
         else:

@@ -1,3 +1,5 @@
+# Copyright 2023 The HuggingFace Team. All rights reserved.
+import datetime
 import platform
 import subprocess
 from typing import Optional, Tuple, Union
@@ -55,7 +57,7 @@ def ffmpeg_microphone(
     elif format_for_conversion == "f32le":
         size_of_sample = 4
     else:
-        raise ValueError("Unhandled format `{format_for_conversion}`. Please use `s16le` or `f32le`")
+        raise ValueError(f"Unhandled format `{format_for_conversion}`. Please use `s16le` or `f32le`")
 
     system = platform.system()
     if system == "Linux":
@@ -144,7 +146,7 @@ def ffmpeg_microphone_live(
         dtype = np.float32
         size_of_sample = 4
     else:
-        raise ValueError("Unhandled format `{format_for_conversion}`. Please use `s16le` or `f32le`")
+        raise ValueError(f"Unhandled format `{format_for_conversion}`. Please use `s16le` or `f32le`")
 
     if stride_length_s is None:
         stride_length_s = chunk_length_s / 6
@@ -154,6 +156,8 @@ def ffmpeg_microphone_live(
 
     stride_left = int(round(sampling_rate * stride_length_s[0])) * size_of_sample
     stride_right = int(round(sampling_rate * stride_length_s[1])) * size_of_sample
+    audio_time = datetime.datetime.now()
+    delta = datetime.timedelta(seconds=chunk_s)
     for item in chunk_bytes_iter(microphone, chunk_len, stride=(stride_left, stride_right), stream=True):
         # Put everything back in numpy scale
         item["raw"] = np.frombuffer(item["raw"], dtype=dtype)
@@ -162,6 +166,10 @@ def ffmpeg_microphone_live(
             item["stride"][1] // size_of_sample,
         )
         item["sampling_rate"] = sampling_rate
+        audio_time += delta
+        if datetime.datetime.now() > audio_time + 10 * delta:
+            # We're late !! SKIP
+            continue
         yield item
 
 

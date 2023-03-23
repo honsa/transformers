@@ -13,13 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Factory function to build auto-model classes."""
+import copy
 import importlib
 from collections import OrderedDict
 
 from ...configuration_utils import PretrainedConfig
 from ...dynamic_module_utils import get_class_from_dynamic_module
-from ...file_utils import copy_func
-from ...utils import logging
+from ...utils import copy_func, logging
 from .configuration_auto import AutoConfig, model_type_to_module_name, replace_list_option_in_docstrings
 
 
@@ -120,7 +120,7 @@ FROM_PRETRAINED_TORCH_DOCSTRING = """
                 Whether ot not to also return a dictionary containing missing keys, unexpected keys and error messages.
             local_files_only(`bool`, *optional*, defaults to `False`):
                 Whether or not to only look at local files (e.g., not try downloading the model).
-            revision(`str`, *optional*, defaults to `"main"`):
+            revision (`str`, *optional*, defaults to `"main"`):
                 The specific model version to use. It can be a branch name, a tag name, or a commit id, since we use a
                 git-based system for storing models and other artifacts on huggingface.co, so `revision` can be any
                 identifier allowed by git.
@@ -216,7 +216,7 @@ FROM_PRETRAINED_TF_DOCSTRING = """
                 Whether ot not to also return a dictionary containing missing keys, unexpected keys and error messages.
             local_files_only(`bool`, *optional*, defaults to `False`):
                 Whether or not to only look at local files (e.g., not try downloading the model).
-            revision(`str`, *optional*, defaults to `"main"`):
+            revision (`str`, *optional*, defaults to `"main"`):
                 The specific model version to use. It can be a branch name, a tag name, or a commit id, since we use a
                 git-based system for storing models and other artifacts on huggingface.co, so `revision` can be any
                 identifier allowed by git.
@@ -312,7 +312,7 @@ FROM_PRETRAINED_FLAX_DOCSTRING = """
                 Whether ot not to also return a dictionary containing missing keys, unexpected keys and error messages.
             local_files_only(`bool`, *optional*, defaults to `False`):
                 Whether or not to only look at local files (e.g., not try downloading the model).
-            revision(`str`, *optional*, defaults to `"main"`):
+            revision (`str`, *optional*, defaults to `"main"`):
                 The specific model version to use. It can be a branch name, a tag name, or a commit id, since we use a
                 git-based system for storing models and other artifacts on huggingface.co, so `revision` can be any
                 identifier allowed by git.
@@ -420,9 +420,30 @@ class _BaseAutoModelClass:
         config = kwargs.pop("config", None)
         trust_remote_code = kwargs.pop("trust_remote_code", False)
         kwargs["_from_auto"] = True
+        hub_kwargs_names = [
+            "cache_dir",
+            "force_download",
+            "local_files_only",
+            "proxies",
+            "resume_download",
+            "revision",
+            "subfolder",
+            "use_auth_token",
+        ]
+        hub_kwargs = {name: kwargs.pop(name) for name in hub_kwargs_names if name in kwargs}
         if not isinstance(config, PretrainedConfig):
+            kwargs_copy = copy.deepcopy(kwargs)
+            # ensure not to pollute the config object with torch_dtype="auto" - since it's
+            # meaningless in the context of the config object - torch.dtype values are acceptable
+            if kwargs_copy.get("torch_dtype", None) == "auto":
+                _ = kwargs_copy.pop("torch_dtype")
+
             config, kwargs = AutoConfig.from_pretrained(
-                pretrained_model_name_or_path, return_unused_kwargs=True, trust_remote_code=trust_remote_code, **kwargs
+                pretrained_model_name_or_path,
+                return_unused_kwargs=True,
+                trust_remote_code=trust_remote_code,
+                **hub_kwargs,
+                **kwargs_copy,
             )
         if hasattr(config, "auto_map") and cls.__name__ in config.auto_map:
             if not trust_remote_code:
@@ -431,7 +452,7 @@ class _BaseAutoModelClass:
                     "on your local machine. Make sure you have read the code there to avoid malicious use, then set "
                     "the option `trust_remote_code=True` to remove this error."
                 )
-            if kwargs.get("revision", None) is None:
+            if hub_kwargs.get("revision", None) is None:
                 logger.warning(
                     "Explicitly passing a `revision` is encouraged when loading a model with custom code to ensure "
                     "no malicious code has been contributed in a newer revision."
@@ -439,12 +460,17 @@ class _BaseAutoModelClass:
             class_ref = config.auto_map[cls.__name__]
             module_file, class_name = class_ref.split(".")
             model_class = get_class_from_dynamic_module(
-                pretrained_model_name_or_path, module_file + ".py", class_name, **kwargs
+                pretrained_model_name_or_path, module_file + ".py", class_name, **hub_kwargs, **kwargs
             )
-            return model_class.from_pretrained(pretrained_model_name_or_path, *model_args, config=config, **kwargs)
+            model_class.register_for_auto_class(cls.__name__)
+            return model_class.from_pretrained(
+                pretrained_model_name_or_path, *model_args, config=config, **hub_kwargs, **kwargs
+            )
         elif type(config) in cls._model_mapping.keys():
             model_class = _get_model_class(config, cls._model_mapping)
-            return model_class.from_pretrained(pretrained_model_name_or_path, *model_args, config=config, **kwargs)
+            return model_class.from_pretrained(
+                pretrained_model_name_or_path, *model_args, config=config, **hub_kwargs, **kwargs
+            )
         raise ValueError(
             f"Unrecognized configuration class {config.__class__} for this kind of AutoModel: {cls.__name__}.\n"
             f"Model type should be one of {', '.join(c.__name__ for c in cls._model_mapping.keys())}."
@@ -537,7 +563,14 @@ def getattribute_from_module(module, attr):
     # Some of the mappings have entries model_type -> object of another model type. In that case we try to grab the
     # object at the top level.
     transformers_module = importlib.import_module("transformers")
-    return getattribute_from_module(transformers_module, attr)
+
+    if module != transformers_module:
+        try:
+            return getattribute_from_module(transformers_module, attr)
+        except ValueError:
+            raise ValueError(f"Could not find {attr} neither in {module} nor in {transformers_module}!")
+    else:
+        raise ValueError(f"Could not find {attr} in {transformers_module}!")
 
 
 class _LazyAutoMapping(OrderedDict):
@@ -545,7 +578,6 @@ class _LazyAutoMapping(OrderedDict):
     " A mapping config to object (model or tokenizer for instance) that will load keys and values when it is accessed.
 
     Args:
-
         - config_mapping: The map model type to config class
         - model_mapping: The map model type to model (or tokenizer) class
     """
@@ -557,14 +589,25 @@ class _LazyAutoMapping(OrderedDict):
         self._extra_content = {}
         self._modules = {}
 
+    def __len__(self):
+        common_keys = set(self._config_mapping.keys()).intersection(self._model_mapping.keys())
+        return len(common_keys) + len(self._extra_content)
+
     def __getitem__(self, key):
         if key in self._extra_content:
             return self._extra_content[key]
         model_type = self._reverse_config_mapping[key.__name__]
-        if model_type not in self._model_mapping:
-            raise KeyError(key)
-        model_name = self._model_mapping[model_type]
-        return self._load_attr_from_module(model_type, model_name)
+        if model_type in self._model_mapping:
+            model_name = self._model_mapping[model_type]
+            return self._load_attr_from_module(model_type, model_name)
+
+        # Maybe there was several model types associated with this config.
+        model_types = [k for k, v in self._config_mapping.items() if v == key.__name__]
+        for mtype in model_types:
+            if mtype in self._model_mapping:
+                model_name = self._model_mapping[mtype]
+                return self._load_attr_from_module(mtype, model_name)
+        raise KeyError(key)
 
     def _load_attr_from_module(self, model_type, attr):
         module_name = model_type_to_module_name(model_type)

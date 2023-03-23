@@ -1,8 +1,8 @@
 import enum
+import warnings
 
-from transformers import MODEL_FOR_CAUSAL_LM_MAPPING, TF_MODEL_FOR_CAUSAL_LM_MAPPING
-
-from ..file_utils import add_end_docstrings, is_tf_available
+from .. import MODEL_FOR_CAUSAL_LM_MAPPING, TF_MODEL_FOR_CAUSAL_LM_MAPPING
+from ..utils import add_end_docstrings, is_tf_available
 from .base import PIPELINE_INIT_ARGS, Pipeline
 
 
@@ -21,6 +21,21 @@ class TextGenerationPipeline(Pipeline):
     """
     Language generation pipeline using any `ModelWithLMHead`. This pipeline predicts the words that will follow a
     specified text prompt.
+
+    Example:
+
+    ```python
+    >>> from transformers import pipeline
+
+    >>> generator = pipeline(model="gpt2")
+    >>> generator("I can't believe you did such a ", do_sample=False)
+    [{'generated_text': "I can't believe you did such a icky thing to me. I'm so sorry. I'm so sorry. I'm so sorry. I'm so sorry. I'm so sorry. I'm so sorry. I'm so sorry. I"}]
+
+    >>> # These parameters will return suggestions, and only the newly created text making it easier for prompting suggestions.
+    >>> outputs = generator("My tart needs some", num_return_sequences=4, return_full_text=False)
+    ```
+
+    Learn more about the basics of using a pipeline in the [pipeline tutorial](../pipeline_tutorial)
 
     This language generation pipeline can currently be loaded from [`pipeline`] using the following task identifier:
     `"text-generation"`.
@@ -80,7 +95,8 @@ class TextGenerationPipeline(Pipeline):
         clean_up_tokenization_spaces=None,
         prefix=None,
         handle_long_generation=None,
-        **generate_kwargs
+        stop_sequence=None,
+        **generate_kwargs,
     ):
         preprocess_params = {}
         if prefix is not None:
@@ -103,7 +119,8 @@ class TextGenerationPipeline(Pipeline):
         if handle_long_generation is not None:
             if handle_long_generation not in {"hole"}:
                 raise ValueError(
-                    f"{handle_long_generation} is not a valid value for `handle_long_generation` parameter expected [None, 'hole']"
+                    f"{handle_long_generation} is not a valid value for `handle_long_generation` parameter expected"
+                    " [None, 'hole']"
                 )
             preprocess_params["handle_long_generation"] = handle_long_generation
 
@@ -112,13 +129,28 @@ class TextGenerationPipeline(Pipeline):
 
         postprocess_params = {}
         if return_full_text is not None and return_type is None:
+            if return_text is not None:
+                raise ValueError("`return_text` is mutually exclusive with `return_full_text`")
+            if return_tensors is not None:
+                raise ValueError("`return_full_text` is mutually exclusive with `return_tensors`")
             return_type = ReturnType.FULL_TEXT if return_full_text else ReturnType.NEW_TEXT
         if return_tensors is not None and return_type is None:
+            if return_text is not None:
+                raise ValueError("`return_text` is mutually exclusive with `return_tensors`")
             return_type = ReturnType.TENSORS
         if return_type is not None:
             postprocess_params["return_type"] = return_type
         if clean_up_tokenization_spaces is not None:
             postprocess_params["clean_up_tokenization_spaces"] = clean_up_tokenization_spaces
+
+        if stop_sequence is not None:
+            stop_sequence_ids = self.tokenizer.encode(stop_sequence, add_special_tokens=False)
+            if len(stop_sequence_ids) > 1:
+                warnings.warn(
+                    "Stopping on a multiple token sequence is not yet supported on transformers. The first token of"
+                    " the stop sequence will be used as the stop sequence string in the interim."
+                )
+            generate_kwargs["eos_token_id"] = stop_sequence_ids[0]
 
         return preprocess_params, forward_params, postprocess_params
 
@@ -141,11 +173,12 @@ class TextGenerationPipeline(Pipeline):
             args (`str` or `List[str]`):
                 One or several prompts (or one list of prompts) to complete.
             return_tensors (`bool`, *optional*, defaults to `False`):
-                Whether or not to include the tensors of predictions (as token indices) in the outputs.
+                Whether or not to return the tensors of predictions (as token indices) in the outputs. If set to
+                `True`, the decoded text is not returned.
             return_text (`bool`, *optional*, defaults to `True`):
-                Whether or not to include the decoded texts in the outputs.
+                Whether or not to return the decoded texts in the outputs.
             return_full_text (`bool`, *optional*, defaults to `True`):
-                If set to `False` only added text is returned, otherwise the full text is returned Only meaningful if
+                If set to `False` only added text is returned, otherwise the full text is returned. Only meaningful if
                 *return_text* is set to True.
             clean_up_tokenization_spaces (`bool`, *optional*, defaults to `False`):
                 Whether or not to clean up the potential extra spaces in the text output.
@@ -166,7 +199,8 @@ class TextGenerationPipeline(Pipeline):
                 corresponding to your framework [here](./model#generative-models)).
 
         Return:
-            A list or a list of list of `dict`: Each result comes as a dictionary with the following keys:
+            A list or a list of list of `dict`: Returns one of the following dictionaries (cannot return a combination
+            of both `generated_text` and `generated_token_ids`):
 
             - **generated_text** (`str`, present when `return_text=True`) -- The generated text.
             - **generated_token_ids** (`torch.Tensor` or `tf.Tensor`, present when `return_tensors=True`) -- The token
@@ -192,7 +226,8 @@ class TextGenerationPipeline(Pipeline):
                 keep_length = self.tokenizer.model_max_length - new_tokens
                 if keep_length <= 0:
                     raise ValueError(
-                        "We cannot use `hole` to handle this generation the number of desired tokens exceeds the models max length"
+                        "We cannot use `hole` to handle this generation the number of desired tokens exceeds the"
+                        " models max length"
                     )
 
                 inputs["input_ids"] = inputs["input_ids"][:, -keep_length:]
@@ -203,14 +238,17 @@ class TextGenerationPipeline(Pipeline):
 
     def _forward(self, model_inputs, **generate_kwargs):
         input_ids = model_inputs["input_ids"]
+        attention_mask = model_inputs.get("attention_mask", None)
         # Allow empty prompts
         if input_ids.shape[1] == 0:
             input_ids = None
+            attention_mask = None
             in_b = 1
         else:
             in_b = input_ids.shape[0]
         prompt_text = model_inputs.pop("prompt_text")
-        generated_sequence = self.model.generate(input_ids=input_ids, **generate_kwargs)  # BS x SL
+        # BS x SL
+        generated_sequence = self.model.generate(input_ids=input_ids, attention_mask=attention_mask, **generate_kwargs)
         out_b = generated_sequence.shape[0]
         if self.framework == "pt":
             generated_sequence = generated_sequence.reshape(in_b, out_b // in_b, *generated_sequence.shape[1:])
@@ -226,7 +264,7 @@ class TextGenerationPipeline(Pipeline):
         records = []
         for sequence in generated_sequence:
             if return_type == ReturnType.TENSORS:
-                record = {"generated_token_ids": generated_sequence}
+                record = {"generated_token_ids": sequence}
             elif return_type in {ReturnType.NEW_TEXT, ReturnType.FULL_TEXT}:
                 # Decode text
                 text = self.tokenizer.decode(

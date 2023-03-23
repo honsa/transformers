@@ -21,7 +21,7 @@ from ...utils import logging
 logger = logging.get_logger(__name__)
 
 VILT_PRETRAINED_CONFIG_ARCHIVE_MAP = {
-    # TODO
+    "dandelin/vilt-b32-mlm": "https://huggingface.co/dandelin/vilt-b32-mlm/blob/main/config.json"
 }
 
 
@@ -30,7 +30,7 @@ class ViltConfig(PretrainedConfig):
     This is the configuration class to store the configuration of a [`ViLTModel`]. It is used to instantiate an ViLT
     model according to the specified arguments, defining the model architecture. Instantiating a configuration with the
     defaults will yield a similar configuration to that of the ViLT
-    [google/vit-base-patch16-224](https://huggingface.co/google/vit-base-patch16-224) architecture.
+    [dandelin/vilt-b32-mlm](https://huggingface.co/dandelin/vilt-b32-mlm) architecture.
 
     Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
     documentation from [`PretrainedConfig`] for more information.
@@ -113,7 +113,6 @@ class ViltConfig(PretrainedConfig):
         attention_probs_dropout_prob=0.0,
         initializer_range=0.02,
         layer_norm_eps=1e-12,
-        is_encoder_decoder=False,
         image_size=384,
         patch_size=32,
         num_channels=3,
@@ -121,7 +120,7 @@ class ViltConfig(PretrainedConfig):
         max_image_length=-1,
         tie_word_embeddings=False,
         num_images=-1,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
 

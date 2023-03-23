@@ -18,9 +18,8 @@ import os
 from shutil import copyfile
 from typing import List, Optional, Tuple
 
-from ...file_utils import is_sentencepiece_available
 from ...tokenization_utils_fast import PreTrainedTokenizerFast
-from ...utils import logging
+from ...utils import is_sentencepiece_available, logging
 
 
 if is_sentencepiece_available():
@@ -111,7 +110,7 @@ class XGLMTokenizerFast(PreTrainedTokenizerFast):
         cls_token="<s>",
         unk_token="<unk>",
         pad_token="<pad>",
-        **kwargs
+        **kwargs,
     ):
         # Compatibility with the original tokenizer
         self.num_madeup_words = 7

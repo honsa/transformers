@@ -18,10 +18,9 @@ from typing import Any, Mapping, Optional
 
 from ... import PreTrainedTokenizer
 from ...configuration_utils import PretrainedConfig
-from ...file_utils import TensorType, is_torch_available
 from ...onnx import OnnxConfig, OnnxConfigWithPast, OnnxSeq2SeqConfigWithPast
 from ...onnx.utils import compute_effective_axis_dimension
-from ...utils import logging
+from ...utils import TensorType, is_torch_available, logging
 
 
 logger = logging.get_logger(__name__)
@@ -44,7 +43,7 @@ class MarianConfig(PretrainedConfig):
 
 
     Args:
-        vocab_size (`int`, *optional*, defaults to 50265):
+        vocab_size (`int`, *optional*, defaults to 58101):
             Vocabulary size of the Marian model. Defines the number of different tokens that can be represented by the
             `inputs_ids` passed when calling [`MarianModel`] or [`TFMarianModel`].
         d_model (`int`, *optional*, defaults to 1024):
@@ -70,17 +69,15 @@ class MarianConfig(PretrainedConfig):
             The dropout ratio for the attention probabilities.
         activation_dropout (`float`, *optional*, defaults to 0.0):
             The dropout ratio for activations inside the fully connected layer.
-        classifier_dropout (`float`, *optional*, defaults to 0.0):
-            The dropout ratio for classifier.
         max_position_embeddings (`int`, *optional*, defaults to 1024):
             The maximum sequence length that this model might ever be used with. Typically set this to something large
             just in case (e.g., 512 or 1024 or 2048).
         init_std (`float`, *optional*, defaults to 0.02):
             The standard deviation of the truncated_normal_initializer for initializing all weight matrices.
-        encoder_layerdrop: (`float`, *optional*, defaults to 0.0):
+        encoder_layerdrop (`float`, *optional*, defaults to 0.0):
             The LayerDrop probability for the encoder. See the [LayerDrop paper](see https://arxiv.org/abs/1909.11556)
             for more details.
-        decoder_layerdrop: (`float`, *optional*, defaults to 0.0):
+        decoder_layerdrop (`float`, *optional*, defaults to 0.0):
             The LayerDrop probability for the decoder. See the [LayerDrop paper](see https://arxiv.org/abs/1909.11556)
             for more details.
         scale_embedding (`bool`, *optional*, defaults to `False`):
@@ -111,7 +108,8 @@ class MarianConfig(PretrainedConfig):
 
     def __init__(
         self,
-        vocab_size=50265,
+        vocab_size=58101,
+        decoder_vocab_size=None,
         max_position_embeddings=1024,
         encoder_layers=12,
         encoder_ffn_dim=4096,
@@ -130,14 +128,15 @@ class MarianConfig(PretrainedConfig):
         activation_dropout=0.0,
         init_std=0.02,
         decoder_start_token_id=58100,
-        classifier_dropout=0.0,
         scale_embedding=False,
         pad_token_id=58100,
         eos_token_id=0,
         forced_eos_token_id=0,
-        **kwargs
+        share_encoder_decoder_embeddings=True,
+        **kwargs,
     ):
         self.vocab_size = vocab_size
+        self.decoder_vocab_size = decoder_vocab_size or vocab_size
         self.max_position_embeddings = max_position_embeddings
         self.d_model = d_model
         self.encoder_ffn_dim = encoder_ffn_dim
@@ -153,10 +152,10 @@ class MarianConfig(PretrainedConfig):
         self.init_std = init_std
         self.encoder_layerdrop = encoder_layerdrop
         self.decoder_layerdrop = decoder_layerdrop
-        self.classifier_dropout = classifier_dropout
         self.use_cache = use_cache
         self.num_hidden_layers = encoder_layers
         self.scale_embedding = scale_embedding  # scale factor will be sqrt(d_model) if True
+        self.share_encoder_decoder_embeddings = share_encoder_decoder_embeddings
         super().__init__(
             pad_token_id=pad_token_id,
             eos_token_id=eos_token_id,
@@ -324,8 +323,9 @@ class MarianOnnxConfig(OnnxSeq2SeqConfigWithPast):
                 self._config.hidden_size // num_encoder_attention_heads,
             )
 
+            mask_dtype = common_inputs["attention_mask"].dtype
             common_inputs["attention_mask"] = torch.cat(
-                [common_inputs["attention_mask"], torch.ones(batch, past_key_values_length)], dim=1
+                [common_inputs["attention_mask"], torch.ones(batch, past_key_values_length, dtype=mask_dtype)], dim=1
             )
             common_inputs["past_key_values"] = [
                 (torch.zeros(past_shape), torch.zeros(past_shape)) for _ in range(num_encoder_layers)
@@ -346,13 +346,13 @@ class MarianOnnxConfig(OnnxSeq2SeqConfigWithPast):
         # Did not use super(OnnxConfigWithPast, self).generate_dummy_inputs for code clarity.
         # If dynamic axis (-1) we forward with a fixed dimension of 2 samples to avoid optimizations made by ONNX
         batch_size = compute_effective_axis_dimension(
-            batch_size, fixed_dimension=OnnxConfig.DEFAULT_FIXED_BATCH, num_token_to_add=0
+            batch_size, fixed_dimension=OnnxConfig.default_fixed_batch, num_token_to_add=0
         )
 
         # If dynamic axis (-1) we forward with a fixed dimension of 8 tokens to avoid optimizations made by ONNX
         token_to_add = tokenizer.num_special_tokens_to_add(is_pair)
         seq_length = compute_effective_axis_dimension(
-            seq_length, fixed_dimension=OnnxConfig.DEFAULT_FIXED_SEQUENCE, num_token_to_add=token_to_add
+            seq_length, fixed_dimension=OnnxConfig.default_fixed_sequence, num_token_to_add=token_to_add
         )
 
         # Generate dummy inputs according to compute batch and sequence
@@ -388,3 +388,7 @@ class MarianOnnxConfig(OnnxSeq2SeqConfigWithPast):
             flattened_output = super(OnnxSeq2SeqConfigWithPast, self)._flatten_past_key_values_(
                 flattened_output, name, idx, t
             )
+
+    @property
+    def atol_for_validation(self) -> float:
+        return 1e-4

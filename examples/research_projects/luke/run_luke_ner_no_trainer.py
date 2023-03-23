@@ -27,14 +27,14 @@ from pathlib import Path
 
 import datasets
 import torch
+from accelerate import Accelerator, DistributedDataParallelKwargs
 from datasets import ClassLabel, load_dataset, load_metric
+from huggingface_hub import Repository
+from luke_utils import DataCollatorForLukeTokenClassification, is_punctuation, padding_tensor
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 import transformers
-from accelerate import Accelerator, DistributedDataParallelKwargs
-from huggingface_hub import Repository
-from luke_utils import DataCollatorForLukeTokenClassification, is_punctuation, padding_tensor
 from transformers import (
     AdamW,
     LukeConfig,
@@ -101,8 +101,8 @@ def parse_args():
         type=int,
         default=32,
         help=(
-            "The maximum total input entity length after tokenization (Used only for (M)Luke models). Sequences longer than this will be truncated,"
-            " sequences shorter will be padded if `--pad_to_max_length` is passed."
+            "The maximum total input entity length after tokenization (Used only for (M)Luke models). Sequences longer"
+            " than this will be truncated, sequences shorter will be padded if `--pad_to_max_length` is passed."
         ),
     )
     parser.add_argument(
@@ -110,8 +110,8 @@ def parse_args():
         type=int,
         default=30,
         help=(
-            "The maximum total input mention length after tokenization (Used only for (M)Luke models). Sequences longer than this will be truncated,"
-            " sequences shorter will be padded if `--pad_to_max_length` is passed."
+            "The maximum total input mention length after tokenization (Used only for (M)Luke models). Sequences"
+            " longer than this will be truncated, sequences shorter will be padded if `--pad_to_max_length` is passed."
         ),
     )
     parser.add_argument(

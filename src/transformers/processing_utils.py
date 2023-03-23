@@ -16,24 +16,28 @@
  Processing saving/loading class for common processors.
 """
 
-import importlib.util
+import os
 from pathlib import Path
 
+from .dynamic_module_utils import custom_object_save
+from .tokenization_utils_base import PreTrainedTokenizerBase
+from .utils import PushToHubMixin, copy_func, direct_transformers_import, logging
 
-# Comment to write
-spec = importlib.util.spec_from_file_location(
-    "transformers", Path(__file__).parent / "__init__.py", submodule_search_locations=[Path(__file__).parent]
-)
-transformers_module = spec.loader.load_module()
+
+logger = logging.get_logger(__name__)
+
+# Dynamically import the Transformers module to grab the attribute classes of the processor form their names.
+transformers_module = direct_transformers_import(Path(__file__).parent)
 
 
 AUTO_TO_BASE_CLASS_MAPPING = {
     "AutoTokenizer": "PreTrainedTokenizerBase",
     "AutoFeatureExtractor": "FeatureExtractionMixin",
+    "AutoImageProcessor": "ImageProcessingMixin",
 }
 
 
-class ProcessorMixin:
+class ProcessorMixin(PushToHubMixin):
     """
     This is a mixin used to provide saving/loading functionality for all processor classes.
     """
@@ -42,13 +46,14 @@ class ProcessorMixin:
     # Names need to be attr_class for attr in attributes
     feature_extractor_class = None
     tokenizer_class = None
+    _auto_class = None
 
     # args have to match the attributes class attribute
     def __init__(self, *args, **kwargs):
         # Sanitize args and kwargs
         for key in kwargs:
             if key not in self.attributes:
-                raise TypeError(f"Unexepcted keyword argument {key}.")
+                raise TypeError(f"Unexpected keyword argument {key}.")
         for arg, attribute_name in zip(args, self.attributes):
             if attribute_name in kwargs:
                 raise TypeError(f"Got multiple values for argument {attribute_name}.")
@@ -83,7 +88,7 @@ class ProcessorMixin:
         attributes_repr = "\n".join(attributes_repr)
         return f"{self.__class__.__name__}:\n{attributes_repr}"
 
-    def save_pretrained(self, save_directory):
+    def save_pretrained(self, save_directory, push_to_hub: bool = False, **kwargs):
         """
         Saves the attributes of this processor (feature extractor, tokenizer...) in the specified directory so that it
         can be reloaded using the [`~ProcessorMixin.from_pretrained`] method.
@@ -91,8 +96,8 @@ class ProcessorMixin:
         <Tip>
 
         This class method is simply calling [`~feature_extraction_utils.FeatureExtractionMixin.save_pretrained`] and
-        [`~tokenization_utils_base.PreTrainedTokenizer.save_pretrained`]. Please refer to the docstrings of the methods
-        above for more information.
+        [`~tokenization_utils_base.PreTrainedTokenizerBase.save_pretrained`]. Please refer to the docstrings of the
+        methods above for more information.
 
         </Tip>
 
@@ -100,7 +105,27 @@ class ProcessorMixin:
             save_directory (`str` or `os.PathLike`):
                 Directory where the feature extractor JSON file and the tokenizer files will be saved (directory will
                 be created if it does not exist).
+            push_to_hub (`bool`, *optional*, defaults to `False`):
+                Whether or not to push your model to the Hugging Face model hub after saving it. You can specify the
+                repository you want to push to with `repo_id` (will default to the name of `save_directory` in your
+                namespace).
+            kwargs:
+                Additional key word arguments passed along to the [`~utils.PushToHubMixin.push_to_hub`] method.
         """
+        os.makedirs(save_directory, exist_ok=True)
+
+        if push_to_hub:
+            commit_message = kwargs.pop("commit_message", None)
+            repo_id = kwargs.pop("repo_id", save_directory.split(os.path.sep)[-1])
+            repo_id = self._create_repo(repo_id, **kwargs)
+            files_timestamps = self._get_files_timestamps(save_directory)
+        # If we have a custom config, we copy the file defining it in the folder and set the attributes so it can be
+        # loaded from the Hub.
+        if self._auto_class is not None:
+            attrs = [getattr(self, attribute_name) for attribute_name in self.attributes]
+            configs = [(a.init_kwargs if isinstance(a, PreTrainedTokenizerBase) else a) for a in attrs]
+            custom_object_save(self, save_directory, config=configs)
+
         for attribute_name in self.attributes:
             attribute = getattr(self, attribute_name)
             # Include the processor class in the attribute config so this processor can then be reloaded with the
@@ -108,6 +133,22 @@ class ProcessorMixin:
             if hasattr(attribute, "_set_processor_class"):
                 attribute._set_processor_class(self.__class__.__name__)
             attribute.save_pretrained(save_directory)
+
+        if self._auto_class is not None:
+            # We added an attribute to the init_kwargs of the tokenizers, which needs to be cleaned up.
+            for attribute_name in self.attributes:
+                attribute = getattr(self, attribute_name)
+                if isinstance(attribute, PreTrainedTokenizerBase):
+                    del attribute.init_kwargs["auto_map"]
+
+        if push_to_hub:
+            self._upload_modified_files(
+                save_directory,
+                repo_id,
+                files_timestamps,
+                commit_message=commit_message,
+                token=kwargs.get("use_auth_token"),
+            )
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
@@ -117,7 +158,8 @@ class ProcessorMixin:
         <Tip>
 
         This class method is simply calling the feature extractor
-        [`~feature_extraction_utils.FeatureExtractionMixin.from_pretrained`] and the tokenizer
+        [`~feature_extraction_utils.FeatureExtractionMixin.from_pretrained`], image processor
+        [`~image_processing_utils.ImageProcessingMixin`] and the tokenizer
         [`~tokenization_utils_base.PreTrainedTokenizer.from_pretrained`] methods. Please refer to the docstrings of the
         methods above for more information.
 
@@ -143,6 +185,32 @@ class ProcessorMixin:
         return cls(*args)
 
     @classmethod
+    def register_for_auto_class(cls, auto_class="AutoProcessor"):
+        """
+        Register this class with a given auto class. This should only be used for custom feature extractors as the ones
+        in the library are already mapped with `AutoProcessor`.
+
+        <Tip warning={true}>
+
+        This API is experimental and may have some slight breaking changes in the next releases.
+
+        </Tip>
+
+        Args:
+            auto_class (`str` or `type`, *optional*, defaults to `"AutoProcessor"`):
+                The auto class to register this new feature extractor with.
+        """
+        if not isinstance(auto_class, str):
+            auto_class = auto_class.__name__
+
+        import transformers.models.auto as auto_module
+
+        if not hasattr(auto_module, auto_class):
+            raise ValueError(f"{auto_class} is not a valid auto class.")
+
+        cls._auto_class = auto_class
+
+    @classmethod
     def _get_arguments_from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
         args = []
         for attribute_name in cls.attributes:
@@ -159,3 +227,15 @@ class ProcessorMixin:
 
             args.append(attribute_class.from_pretrained(pretrained_model_name_or_path, **kwargs))
         return args
+
+    @property
+    def model_input_names(self):
+        first_attribute = getattr(self, self.attributes[0])
+        return getattr(first_attribute, "model_input_names", None)
+
+
+ProcessorMixin.push_to_hub = copy_func(ProcessorMixin.push_to_hub)
+if ProcessorMixin.push_to_hub.__doc__ is not None:
+    ProcessorMixin.push_to_hub.__doc__ = ProcessorMixin.push_to_hub.__doc__.format(
+        object="processor", object_class="AutoProcessor", object_files="processor files"
+    )

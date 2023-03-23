@@ -21,10 +21,9 @@ from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
 
-from ...file_utils import cached_path, is_datasets_available, is_faiss_available, is_remote_url, requires_backends
 from ...tokenization_utils import PreTrainedTokenizer
 from ...tokenization_utils_base import BatchEncoding
-from ...utils import logging
+from ...utils import cached_file, is_datasets_available, is_faiss_available, logging, requires_backends
 from .configuration_rag import RagConfig
 from .tokenization_rag import RagTokenizer
 
@@ -112,22 +111,21 @@ class LegacyIndex(Index):
         self._index_initialized = False
 
     def _resolve_path(self, index_path, filename):
-        assert os.path.isdir(index_path) or is_remote_url(index_path), "Please specify a valid `index_path`."
-        archive_file = os.path.join(index_path, filename)
+        is_local = os.path.isdir(index_path)
         try:
             # Load from URL or cache if already cached
-            resolved_archive_file = cached_path(archive_file)
+            resolved_archive_file = cached_file(index_path, filename)
         except EnvironmentError:
             msg = (
-                f"Can't load '{archive_file}'. Make sure that:\n\n"
+                f"Can't load '{filename}'. Make sure that:\n\n"
                 f"- '{index_path}' is a correct remote path to a directory containing a file named {filename}\n\n"
                 f"- or '{index_path}' is the correct path to a directory containing a file named {filename}.\n\n"
             )
             raise EnvironmentError(msg)
-        if resolved_archive_file == archive_file:
-            logger.info(f"loading file {archive_file}")
+        if is_local:
+            logger.info(f"loading file {resolved_archive_file}")
         else:
-            logger.info(f"loading file {archive_file} from cache at {resolved_archive_file}")
+            logger.info(f"loading file {filename} from cache at {resolved_archive_file}")
         return resolved_archive_file
 
     def _load_passages(self):
@@ -355,7 +353,7 @@ class RagRetriever:
 
     >>> dataset = (
     ...     ...
-    >>> )  # dataset must be a datasets.Datasets object with columns "title", "text" and "embeddings", and it must have a faiss index
+    ... )  # dataset must be a datasets.Datasets object with columns "title", "text" and "embeddings", and it must have a faiss index
     >>> retriever = RagRetriever.from_pretrained("facebook/dpr-ctx_encoder-single-nq-base", indexed_dataset=dataset)
 
     >>> # To load your own indexed dataset built with the datasets library that was saved on disk. More info in examples/rag/use_own_knowledge_dataset.py
@@ -582,7 +580,7 @@ class RagRetriever:
                 The prefix used by the generator's tokenizer.
             n_docs (`int`, *optional*):
                 The number of docs retrieved per query.
-            return_tensors (`str` or [`~file_utils.TensorType`], *optional*, defaults to "pt"):
+            return_tensors (`str` or [`~utils.TensorType`], *optional*, defaults to "pt"):
                 If set, will return tensors instead of list of python integers. Acceptable values are:
 
                 - `'tf'`: Return TensorFlow `tf.constant` objects.
@@ -614,17 +612,17 @@ class RagRetriever:
         )
 
         if self.return_tokenized_docs:
-            retrived_doc_text = []
-            retrived_doc_title = []
+            retrieved_doc_text = []
+            retrieved_doc_title = []
 
             for b_idx in range(len(docs)):
                 for doc_idx in range(n_docs):
-                    retrived_doc_text.append(docs[b_idx]["text"][doc_idx])
-                    retrived_doc_title.append(docs[b_idx]["title"][doc_idx])
+                    retrieved_doc_text.append(docs[b_idx]["text"][doc_idx])
+                    retrieved_doc_title.append(docs[b_idx]["title"][doc_idx])
 
             tokenized_docs = self.ctx_encoder_tokenizer(
-                retrived_doc_title,
-                retrived_doc_text,
+                retrieved_doc_title,
+                retrieved_doc_text,
                 truncation=True,
                 padding="longest",
                 return_tensors=return_tensors,

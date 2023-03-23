@@ -21,15 +21,15 @@ from typing import Optional, Tuple, Union
 import torch
 from torch import Tensor, nn
 
-from ...file_utils import (
+from ...modeling_outputs import BaseModelOutputWithPooling
+from ...modeling_utils import PreTrainedModel
+from ...utils import (
     ModelOutput,
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
+    logging,
     replace_return_docstrings,
 )
-from ...modeling_outputs import BaseModelOutputWithPooling
-from ...modeling_utils import PreTrainedModel
-from ...utils import logging
 from ..bert.modeling_bert import BertEncoder, BertModel
 from .configuration_dpr import DPRConfig
 
@@ -170,13 +170,13 @@ class DPRPreTrainedModel(PreTrainedModel):
 
 
 class DPREncoder(DPRPreTrainedModel):
-
     base_model_prefix = "bert_model"
 
     def __init__(self, config: DPRConfig):
         super().__init__(config)
         self.bert_model = BertModel(config, add_pooling_layer=False)
-        assert self.bert_model.config.hidden_size > 0, "Encoder hidden_size can't be zero"
+        if self.bert_model.config.hidden_size <= 0:
+            raise ValueError("Encoder hidden_size can't be zero")
         self.projection_dim = config.projection_dim
         if self.projection_dim > 0:
             self.encode_proj = nn.Linear(self.bert_model.config.hidden_size, config.projection_dim)
@@ -226,7 +226,6 @@ class DPREncoder(DPRPreTrainedModel):
 
 
 class DPRSpanPredictor(DPRPreTrainedModel):
-
     base_model_prefix = "encoder"
 
     def __init__(self, config: DPRConfig):
@@ -298,6 +297,7 @@ class DPRPretrainedContextEncoder(DPRPreTrainedModel):
     load_tf_weights = None
     base_model_prefix = "ctx_encoder"
     _keys_to_ignore_on_load_missing = [r"position_ids"]
+    _keys_to_ignore_on_load_unexpected = [r"pooler"]
 
 
 class DPRPretrainedQuestionEncoder(DPRPreTrainedModel):
@@ -310,6 +310,7 @@ class DPRPretrainedQuestionEncoder(DPRPreTrainedModel):
     load_tf_weights = None
     base_model_prefix = "question_encoder"
     _keys_to_ignore_on_load_missing = [r"position_ids"]
+    _keys_to_ignore_on_load_unexpected = [r"pooler"]
 
 
 class DPRPretrainedReader(DPRPreTrainedModel):
@@ -368,7 +369,7 @@ DPR_ENCODERS_INPUTS_DOCSTRING = r"""
             DPR is a model with absolute position embeddings so it's usually advised to pad the inputs on the right
             rather than the left.
 
-            Indices can be obtained using [`DPRTokenizer`]. See [`PreTrainedTokenizer.encode`] and
+            Indices can be obtained using [`AutoTokenizer`]. See [`PreTrainedTokenizer.encode`] and
             [`PreTrainedTokenizer.__call__`] for details.
 
             [What are input IDs?](../glossary#input-ids)
@@ -398,12 +399,12 @@ DPR_ENCODERS_INPUTS_DOCSTRING = r"""
             Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
             more detail.
         return_dict (`bool`, *optional*):
-            Whether or not to return a [`~file_utils.ModelOutput`] instead of a plain tuple.
+            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
 """
 
 DPR_READER_INPUTS_DOCSTRING = r"""
     Args:
-        input_ids: (`Tuple[torch.LongTensor]` of shapes `(n_passages, sequence_length)`):
+        input_ids (`Tuple[torch.LongTensor]` of shapes `(n_passages, sequence_length)`):
             Indices of input sequence tokens in the vocabulary. It has to be a sequence triplet with 1) the question
             and 2) the passages titles and 3) the passages texts To match pretraining, DPR `input_ids` sequence should
             be formatted with [CLS] and [SEP] with the format:
@@ -434,7 +435,7 @@ DPR_READER_INPUTS_DOCSTRING = r"""
             Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
             more detail.
         return_dict (`bool`, *optional*):
-            Whether or not to return a [`~file_utils.ModelOutput`] instead of a plain tuple.
+            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
 """
 
 

@@ -29,9 +29,15 @@ ELECTRA_PRETRAINED_CONFIG_ARCHIVE_MAP = {
     "google/electra-small-generator": "https://huggingface.co/google/electra-small-generator/resolve/main/config.json",
     "google/electra-base-generator": "https://huggingface.co/google/electra-base-generator/resolve/main/config.json",
     "google/electra-large-generator": "https://huggingface.co/google/electra-large-generator/resolve/main/config.json",
-    "google/electra-small-discriminator": "https://huggingface.co/google/electra-small-discriminator/resolve/main/config.json",
-    "google/electra-base-discriminator": "https://huggingface.co/google/electra-base-discriminator/resolve/main/config.json",
-    "google/electra-large-discriminator": "https://huggingface.co/google/electra-large-discriminator/resolve/main/config.json",
+    "google/electra-small-discriminator": (
+        "https://huggingface.co/google/electra-small-discriminator/resolve/main/config.json"
+    ),
+    "google/electra-base-discriminator": (
+        "https://huggingface.co/google/electra-base-discriminator/resolve/main/config.json"
+    ),
+    "google/electra-large-discriminator": (
+        "https://huggingface.co/google/electra-large-discriminator/resolve/main/config.json"
+    ),
 }
 
 
@@ -113,12 +119,12 @@ class ElectraConfig(PretrainedConfig):
     Examples:
 
     ```python
-    >>> from transformers import ElectraModel, ElectraConfig
+    >>> from transformers import ElectraConfig, ElectraModel
 
     >>> # Initializing a ELECTRA electra-base-uncased style configuration
     >>> configuration = ElectraConfig()
 
-    >>> # Initializing a model from the electra-base-uncased style configuration
+    >>> # Initializing a model (with random weights) from the electra-base-uncased style configuration
     >>> model = ElectraModel(configuration)
 
     >>> # Accessing the model configuration
@@ -149,7 +155,7 @@ class ElectraConfig(PretrainedConfig):
         position_embedding_type="absolute",
         use_cache=True,
         classifier_dropout=None,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(pad_token_id=pad_token_id, **kwargs)
 
@@ -179,10 +185,14 @@ class ElectraConfig(PretrainedConfig):
 class ElectraOnnxConfig(OnnxConfig):
     @property
     def inputs(self) -> Mapping[str, Mapping[int, str]]:
+        if self.task == "multiple-choice":
+            dynamic_axis = {0: "batch", 1: "choice", 2: "sequence"}
+        else:
+            dynamic_axis = {0: "batch", 1: "sequence"}
         return OrderedDict(
             [
-                ("input_ids", {0: "batch", 1: "sequence"}),
-                ("attention_mask", {0: "batch", 1: "sequence"}),
-                ("token_type_ids", {0: "batch", 1: "sequence"}),
+                ("input_ids", dynamic_axis),
+                ("attention_mask", dynamic_axis),
+                ("token_type_ids", dynamic_axis),
             ]
         )

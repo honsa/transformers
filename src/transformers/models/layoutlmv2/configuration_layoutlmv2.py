@@ -15,8 +15,7 @@
 """ LayoutLMv2 model configuration"""
 
 from ...configuration_utils import PretrainedConfig
-from ...file_utils import is_detectron2_available
-from ...utils import logging
+from ...utils import is_detectron2_available, logging
 
 
 logger = logging.get_logger(__name__)
@@ -104,12 +103,12 @@ class LayoutLMv2Config(PretrainedConfig):
     Example:
 
     ```python
-    >>> from transformers import LayoutLMv2Model, LayoutLMv2Config
+    >>> from transformers import LayoutLMv2Config, LayoutLMv2Model
 
     >>> # Initializing a LayoutLMv2 microsoft/layoutlmv2-base-uncased style configuration
     >>> configuration = LayoutLMv2Config()
 
-    >>> # Initializing a model from the microsoft/layoutlmv2-base-uncased style configuration
+    >>> # Initializing a model (with random weights) from the microsoft/layoutlmv2-base-uncased style configuration
     >>> model = LayoutLMv2Model(configuration)
 
     >>> # Accessing the model configuration
@@ -146,7 +145,7 @@ class LayoutLMv2Config(PretrainedConfig):
         has_spatial_attention_bias=True,
         has_visual_segment_embedding=False,
         detectron2_config_args=None,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(
             vocab_size=vocab_size,

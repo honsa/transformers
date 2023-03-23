@@ -23,6 +23,7 @@ from random import randint
 from typing import Optional
 
 import datasets
+import evaluate
 import numpy as np
 from datasets import DatasetDict, load_dataset
 
@@ -37,14 +38,14 @@ from transformers import (
     set_seed,
 )
 from transformers.trainer_utils import get_last_checkpoint
-from transformers.utils import check_min_version
+from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 
 
 logger = logging.getLogger(__name__)
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-check_min_version("4.17.0.dev0")
+check_min_version("4.28.0.dev0")
 
 require_version("datasets>=1.14.0", "To fix: pip install -r examples/pytorch/audio-classification/requirements.txt")
 
@@ -86,8 +87,9 @@ class DataTrainingArguments:
     eval_split_name: str = field(
         default="validation",
         metadata={
-            "help": "The name of the training data set split to use (via the datasets library). Defaults to "
-            "'validation'"
+            "help": (
+                "The name of the training data set split to use (via the datasets library). Defaults to 'validation'"
+            )
         },
     )
     audio_column_name: str = field(
@@ -100,15 +102,19 @@ class DataTrainingArguments:
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
-            "help": "For debugging purposes or quicker training, truncate the number of training examples to this "
-            "value if set."
+            "help": (
+                "For debugging purposes or quicker training, truncate the number of training examples to this "
+                "value if set."
+            )
         },
     )
     max_eval_samples: Optional[int] = field(
         default=None,
         metadata={
-            "help": "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
-            "value if set."
+            "help": (
+                "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
+                "value if set."
+            )
         },
     )
     max_length_seconds: float = field(
@@ -149,12 +155,18 @@ class ModelArguments:
     use_auth_token: bool = field(
         default=False,
         metadata={
-            "help": "Will use the token generated when running `transformers-cli login` (necessary to use this script "
-            "with private models)."
+            "help": (
+                "Will use the token generated when running `huggingface-cli login` (necessary to use this script "
+                "with private models)."
+            )
         },
     )
     freeze_feature_extractor: Optional[bool] = field(
         default=None, metadata={"help": "Whether to freeze the feature extractor layers of the model."}
+    )
+    ignore_mismatched_sizes: bool = field(
+        default=False,
+        metadata={"help": "Will enable to load a pretrained model whose head dimensions are different."},
     )
 
     def __post_init__(self):
@@ -186,12 +198,20 @@ def main():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
+    # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
+    # information sent is the one passed as arguments along with your Python/PyTorch versions.
+    send_example_telemetry("run_audio_classification", model_args, data_args)
+
     # Setup logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
+
+    if training_args.should_log:
+        # The default of training_args.log_level is passive, so we set log level at info here to have that default.
+        transformers.utils.logging.set_verbosity_info()
 
     log_level = training_args.get_process_log_level()
     logger.setLevel(log_level)
@@ -227,10 +247,16 @@ def main():
     # Initialize our dataset and prepare it for the audio classification task.
     raw_datasets = DatasetDict()
     raw_datasets["train"] = load_dataset(
-        data_args.dataset_name, data_args.dataset_config_name, split=data_args.train_split_name
+        data_args.dataset_name,
+        data_args.dataset_config_name,
+        split=data_args.train_split_name,
+        use_auth_token=True if model_args.use_auth_token else None,
     )
     raw_datasets["eval"] = load_dataset(
-        data_args.dataset_name, data_args.dataset_config_name, split=data_args.eval_split_name
+        data_args.dataset_name,
+        data_args.dataset_config_name,
+        split=data_args.eval_split_name,
+        use_auth_token=True if model_args.use_auth_token else None,
     )
 
     if data_args.audio_column_name not in raw_datasets["train"].column_names:
@@ -263,38 +289,41 @@ def main():
         data_args.audio_column_name, datasets.features.Audio(sampling_rate=feature_extractor.sampling_rate)
     )
 
+    model_input_name = feature_extractor.model_input_names[0]
+
     def train_transforms(batch):
         """Apply train_transforms across a batch."""
-        output_batch = {"input_values": []}
+        subsampled_wavs = []
         for audio in batch[data_args.audio_column_name]:
             wav = random_subsample(
                 audio["array"], max_length=data_args.max_length_seconds, sample_rate=feature_extractor.sampling_rate
             )
-            output_batch["input_values"].append(wav)
-        output_batch["labels"] = [label for label in batch[data_args.label_column_name]]
+            subsampled_wavs.append(wav)
+        inputs = feature_extractor(subsampled_wavs, sampling_rate=feature_extractor.sampling_rate)
+        output_batch = {model_input_name: inputs.get(model_input_name)}
+        output_batch["labels"] = list(batch[data_args.label_column_name])
 
         return output_batch
 
     def val_transforms(batch):
         """Apply val_transforms across a batch."""
-        output_batch = {"input_values": []}
-        for audio in batch[data_args.audio_column_name]:
-            wav = audio["array"]
-            output_batch["input_values"].append(wav)
-        output_batch["labels"] = [label for label in batch[data_args.label_column_name]]
+        wavs = [audio["array"] for audio in batch[data_args.audio_column_name]]
+        inputs = feature_extractor(wavs, sampling_rate=feature_extractor.sampling_rate)
+        output_batch = {model_input_name: inputs.get(model_input_name)}
+        output_batch["labels"] = list(batch[data_args.label_column_name])
 
         return output_batch
 
     # Prepare label mappings.
     # We'll include these in the model's config to get human readable labels in the Inference API.
     labels = raw_datasets["train"].features[data_args.label_column_name].names
-    label2id, id2label = dict(), dict()
+    label2id, id2label = {}, {}
     for i, label in enumerate(labels):
         label2id[label] = str(i)
         id2label[str(i)] = label
 
     # Load the accuracy metric from the datasets package
-    metric = datasets.load_metric("accuracy")
+    metric = evaluate.load("accuracy")
 
     # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with
     # `predictions` and `label_ids` fields) and has to return a dictionary string to float.
@@ -320,6 +349,7 @@ def main():
         cache_dir=model_args.cache_dir,
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
+        ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
     )
 
     # freeze the convolutional waveform encoder

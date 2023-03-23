@@ -16,10 +16,9 @@
 import logging
 import re
 
-import torch
-
 import pytorch_quantization
 import pytorch_quantization.nn as quant_nn
+import torch
 from pytorch_quantization import calib
 from pytorch_quantization.tensor_quant import QuantDescriptor
 
@@ -51,8 +50,10 @@ def add_arguments(parser):
     group.add_argument(
         "--recalibrate-weights",
         action="store_true",
-        help="recalibrate weight amaxes by taking the max of the weights."
-        " amaxes will be computed with the current quantization granularity (axis).",
+        help=(
+            "recalibrate weight amaxes by taking the max of the weights."
+            " amaxes will be computed with the current quantization granularity (axis)."
+        ),
     )
 
 
@@ -269,7 +270,7 @@ def set_quantizer(name, mod, quantizer, k, v):
         assert hasattr(quantizer_mod, k)
         setattr(quantizer_mod, k, v)
     else:
-        logger.warn(f"{name} has no {quantizer}")
+        logger.warning(f"{name} has no {quantizer}")
 
 
 def set_quantizers(name, mod, which="both", **kwargs):
